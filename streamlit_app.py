@@ -79,37 +79,59 @@ num_cols = [c for c in fdf.columns if pd.api.types.is_numeric_dtype(fdf[c])]
 time_cols = [c for c in fdf.columns if "date" in c.lower()] + \
             [c for c in fdf.columns if str(fdf[c].dtype).startswith("datetime64")]
 
-# --------- Tabs ---------
-tab_ov, tab_seg, tab_an, tab_fc, tab_ai = st.tabs(
-    ["Overview", "Segmentation (KMeans)", "Anomalies (IsolationForest)", "Forecast", "AI Q&A"]
-)
+    st.markdown("### Charts")
+
+    # Pick sensible defaults
+    y_pref = [c for c in ["sales","profit","units"] if c in fdf.columns] or num_cols
+    tcol = st.selectbox("Time column", options=time_cols or [None], index=0 if time_cols else 0, key="chart_tcol")
+    ycol = st.selectbox("Value", options=y_pref or [None], index=0 if y_pref else 0, key="chart_ycol")
+    ccol = cat_col  # category column
+
+    # Time series
+    if tcol and ycol and tcol in fdf and ycol in fdf:
+        fig_ts = px.line(
+            fdf.sort_values(tcol),
+            x=tcol, y=ycol,
+            color=ccol if (ccol in fdf) else None,
+            markers=True,
+            title=f"{ycol} over time"
+        )
+        st.plotly_chart(fig_ts, use_container_width=True, key="ts_chart")
+        try:
+            png_ts = fig_to_png_bytes(fig_ts)
+            st.download_button("⬇️ Download time-series PNG", png_ts,
+                               file_name="timeseries.png", mime="image/png", key="ts_dl")
+        except Exception:
+            st.caption("PNG export unavailable (kaleido not ready).")
+
+    # Bar chart
+    if ccol in fdf and ycol in fdf:
+        gp = fdf.groupby(ccol, as_index=False)[ycol].sum().sort_values(ycol, ascending=False)
+        fig_bar = px.bar(gp, x=ccol, y=ycol, title=f"{ycol} by {ccol}")
+        st.plotly_chart(fig_bar, use_container_width=True, key="bar_chart")
+        try:
+            png_bar = fig_to_png_bytes(fig_bar)
+            st.download_button("⬇️ Download category bar PNG", png_bar,
+                               file_name="by_category.png", mime="image/png", key="bar_dl")
+        except Exception:
+            st.caption("PNG export unavailable (kaleido not ready).")
+
+    # Pie chart
+    if ccol in fdf and "profit" in fdf:
+        gp2 = fdf.groupby(ccol, as_index=False)["profit"].sum()
+        fig_pie = px.pie(gp2, names=ccol, values="profit", title="Profit share by category")
+        st.plotly_chart(fig_pie, use_container_width=True, key="pie_chart")
+        try:
+            png_pie = fig_to_png_bytes(fig_pie)
+            st.download_button("⬇️ Download profit pie PNG", png_pie,
+                               file_name="profit_share.png", mime="image/png", key="pie_dl")
+        except Exception:
+            st.caption("PNG export unavailable (kaleido not ready).")
+
 
 # --------- Overview ---------
 with tab_ov:
     st.subheader("Data Preview (filtered)")
-    st.caption(f"Rows after filters: {len(fdf):,}")
-    st.dataframe(fdf.head(50), use_container_width=True)
-
-    # KPIs
-    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
-    c1.metric("Rows", f"{len(fdf):,}")
-    c2.metric("Columns", f"{fdf.shape[1]}")
-    if "sales" in fdf:
-        c3.metric("Total Sales", f"{fdf['sales'].sum():,.0f}")
-        c6.metric("Avg Sales", f"{fdf['sales'].mean():,.2f}")
-    if "profit" in fdf:
-        c4.metric("Total Profit", f"{fdf['profit'].sum():,.0f}")
-        c7.metric("Avg Profit", f"{fdf['profit'].mean():,.2f}")
-    if "sales" in fdf and "profit" in fdf and fdf["sales"].sum() != 0:
-        margin = 100 * fdf["profit"].sum() / fdf["sales"].sum()
-        c5.metric("Profit Margin %", f"{margin:.1f}%")
-
-        st.markdown("### Charts")
-    # Pick sensible defaults
-    y_pref = [c for c in ["sales","profit","units"] if c in fdf.columns] or num_cols
-    tcol = st.selectbox("Time column", options=time_cols or [None], index=0 if time_cols else 0, key="tcol")
-    ycol = st.selectbox("Value", options=y_pref or [None], index=0 if y_pref else 0, key="ycol")
-    ccol = cat_col  # use detected category column if available
 
     # Time series
     if tcol and ycol and tcol in fdf and ycol in fdf:
