@@ -9,7 +9,15 @@ st.title("📊 Interactive BI Dashboard + 🤖 AI Insights")
 # --- Upload or built-in demo (no files needed) ---
 f = st.file_uploader("Upload CSV (optional)", type=["csv"])
 if f is not None:
-    df = pd.read_csv(f)
+   # Use demo data if no upload
+df = pd.DataFrame({
+    "date": pd.date_range("2024-01-01", periods=14, freq="D"),
+    "category": ["Electronics","Fashion","Groceries","Electronics","Fashion","Groceries","Electronics",
+                 "Fashion","Groceries","Electronics","Fashion","Groceries","Electronics","Fashion"],
+    "sales":  [2000,1500,800,3000,2200,1200,2500,1800,1100,2700,2100,900,2600,1900],
+    "profit": [ 300, 200,100, 500, 350, 150, 400, 260, 130, 420, 320,120, 410, 280],
+})
+
 else:
     st.info("📂 No file uploaded — using demo data.")
     df = pd.DataFrame({
