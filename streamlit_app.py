@@ -194,9 +194,12 @@ with tab_fc:
             horizon = st.slider("Forecast horizon", 4, 26, 12)
 
             ts = fdf[[date_col, target]].dropna()
+            ts[date_col] = pd.to_datetime(ts[date_col])
             ts = ts.groupby(date_col, as_index=False)[target].sum()
             ts.index = pd.to_datetime(ts[date_col])
-            ts = ts.resample(freq).sum().rename(columns={target: "y"}).dropna()
+            # 🔥 FIX: keep only numeric columns when resampling
+            ts = ts[[target]].resample(freq).sum().dropna()
+            ts = ts.rename(columns={target: "y"})
 
             if len(ts) < 8:
                 st.warning("Need at least 8 periods after resampling.")
