@@ -110,8 +110,6 @@ with st.sidebar:
         d1, d2 = st.date_input("Date range", [dmin.date(), dmax.date()], key="f_dates")
     else:
         d1 = d2 = None
-        st.sidebar.markdown("---")
-st.sidebar.markdown("🐞 Problems? [Report here](mailto:youremail@example.com)")
 
 
 fdf = clean.copy()
