@@ -1,7 +1,9 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import io
+from sklearn.cluster import KMeans
+from sklearn.ensemble import IsolationForest
+from statsmodels.tsa.arima.model import ARIMA
 
 st.set_page_config(page_title="📊 AI BI Dashboard", layout="wide")
 
@@ -14,11 +16,13 @@ if uploaded_file:
 else:
     st.info("📂 No file uploaded. Using demo data...")
     df = pd.DataFrame({
-        "date": pd.date_range("2024-01-01", periods=10, freq="D"),
+        "date": pd.date_range("2024-01-01", periods=20, freq="D"),
         "category": ["Electronics","Fashion","Groceries","Electronics","Fashion",
-                     "Groceries","Electronics","Fashion","Groceries","Electronics"],
-        "sales": [1200, 900, 600, 1500, 1100, 800, 1700, 950, 720, 1400],
-        "profit": [200, 150, 80, 300, 220, 120, 330, 180, 100, 260],
+                     "Groceries","Electronics","Fashion","Groceries","Electronics"]*2,
+        "sales": [1200, 900, 600, 1500, 1100, 800, 1700, 950, 720, 1400,
+                  1300, 920, 640, 1600, 1120, 850, 1750, 980, 750, 1450],
+        "profit": [200, 150, 80, 300, 220, 120, 330, 180, 100, 260,
+                   210, 160, 90, 320, 230, 130, 350, 190, 110, 270],
     })
 
 # --- Filters ---
@@ -40,41 +44,95 @@ if time_col:
     if len(dr) == 2:
         df = df[(df[time_col] >= pd.to_datetime(dr[0])) & (df[time_col] <= pd.to_datetime(dr[1]))]
 
-# --- KPIs ---
-st.subheader("📈 Key Metrics")
-kpi1, kpi2, kpi3 = st.columns(3)
+# --- Tabs ---
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Dashboard", "📌 Segmentation", "⚠️ Anomalies", "🔮 Forecast", "🤖 AI Insights"])
 
-with kpi1:
-    st.metric("Rows", len(df))
-with kpi2:
-    st.metric("Total Sales", f"{df['sales'].sum():,.0f}" if "sales" in df else "N/A")
-with kpi3:
-    st.metric("Avg Sales", f"{df['sales'].mean():,.2f}" if "sales" in df else "N/A")
+# --- Dashboard ---
+with tab1:
+    st.subheader("📈 Key Metrics")
+    kpi1, kpi2, kpi3 = st.columns(3)
+    with kpi1:
+        st.metric("Rows", len(df))
+    with kpi2:
+        st.metric("Total Sales", f"{df['sales'].sum():,.0f}" if "sales" in df else "N/A")
+    with kpi3:
+        st.metric("Avg Sales", f"{df['sales'].mean():,.2f}" if "sales" in df else "N/A")
 
-# --- Charts ---
-st.subheader("📊 Charts")
+    st.subheader("📊 Charts")
+    if time_col and "sales" in df:
+        fig_ts = px.line(df.sort_values(time_col), x=time_col, y="sales",
+                         color=cat_col if cat_col else None,
+                         markers=True, title="Sales Over Time")
+        st.plotly_chart(fig_ts, use_container_width=True, key="line_chart")
 
-if time_col and "sales" in df:
-    fig_ts = px.line(df.sort_values(time_col), x=time_col, y="sales",
-                     color=cat_col if cat_col else None,
-                     markers=True, title="Sales Over Time")
-    st.plotly_chart(fig_ts, use_container_width=True, key="line_chart")
+    if cat_col and "sales" in df:
+        gp = df.groupby(cat_col, as_index=False)["sales"].sum()
+        fig_bar = px.bar(gp, x=cat_col, y="sales", title="Sales by Category")
+        st.plotly_chart(fig_bar, use_container_width=True, key="bar_chart")
 
-if cat_col and "sales" in df:
-    gp = df.groupby(cat_col, as_index=False)["sales"].sum()
-    fig_bar = px.bar(gp, x=cat_col, y="sales", title="Sales by Category")
-    st.plotly_chart(fig_bar, use_container_width=True, key="bar_chart")
+    if cat_col and "profit" in df:
+        gp2 = df.groupby(cat_col, as_index=False)["profit"].sum()
+        fig_pie = px.pie(gp2, names=cat_col, values="profit", title="Profit Share by Category")
+        st.plotly_chart(fig_pie, use_container_width=True, key="pie_chart")
 
-if cat_col and "profit" in df:
-    gp2 = df.groupby(cat_col, as_index=False)["profit"].sum()
-    fig_pie = px.pie(gp2, names=cat_col, values="profit", title="Profit Share by Category")
-    st.plotly_chart(fig_pie, use_container_width=True, key="pie_chart")
+# --- Segmentation ---
+with tab2:
+    st.subheader("📌 Customer Segmentation (KMeans)")
+    if "sales" in df and "profit" in df:
+        try:
+            X = df[["sales", "profit"]]
+            kmeans = KMeans(n_clusters=3, random_state=42).fit(X)
+            df["segment"] = kmeans.labels_
+            fig_seg = px.scatter(df, x="sales", y="profit", color="segment", title="Customer Segments")
+            st.plotly_chart(fig_seg, use_container_width=True, key="seg_chart")
+        except Exception as e:
+            st.error(f"Segmentation failed: {e}")
+    else:
+        st.warning("Need 'sales' and 'profit' columns for segmentation.")
 
-# --- AI Insights Placeholder ---
-st.subheader("🤖 AI Insights")
-st.write("This is where AI-driven insights will appear (coming soon).")
+# --- Anomalies ---
+with tab3:
+    st.subheader("⚠️ Anomaly Detection (IsolationForest)")
+    if "sales" in df:
+        try:
+            model = IsolationForest(contamination=0.1, random_state=42)
+            df["anomaly"] = model.fit_predict(df[["sales"]])
+            anomalies = df[df["anomaly"] == -1]
+            fig_anom = px.scatter(df, x=time_col, y="sales", color="anomaly",
+                                  title="Anomalies in Sales (red = anomaly)")
+            st.plotly_chart(fig_anom, use_container_width=True, key="anom_chart")
+            st.write("Detected anomalies:", anomalies)
+        except Exception as e:
+            st.error(f"Anomaly detection failed: {e}")
+    else:
+        st.warning("Need 'sales' column for anomaly detection.")
 
-# --- Data Download ---
+# --- Forecast ---
+with tab4:
+    st.subheader("🔮 Sales Forecast (ARIMA)")
+    if time_col and "sales" in df:
+        try:
+            ts = df.set_index(time_col)["sales"].resample("D").sum()
+            ts = ts.asfreq("D").fillna(method="ffill")
+            model = ARIMA(ts, order=(1, 1, 1))
+            model_fit = model.fit()
+            forecast = model_fit.forecast(steps=7)
+            fc_df = pd.DataFrame({"date": forecast.index, "forecast": forecast.values})
+            fig_fc = px.line(ts, x=ts.index, y=ts.values, title="7-Day Sales Forecast")
+            fig_fc.add_scatter(x=fc_df["date"], y=fc_df["forecast"], mode="lines+markers", name="Forecast")
+            st.plotly_chart(fig_fc, use_container_width=True, key="forecast_chart")
+        except Exception as e:
+            st.error(f"Forecasting failed: {e}")
+    else:
+        st.warning("Need 'date' and 'sales' columns for forecasting.")
+
+# --- AI Insights ---
+with tab5:
+    st.subheader("🤖 AI Insights")
+    st.write("This is a placeholder for LLM-powered insights (future integration).")
+    st.info("Example: 'Sales dropped on weekends compared to weekdays' or 'Electronics category drives 40% of total profit'.")
+
+# --- Download ---
 st.subheader("⬇️ Download Data")
 csv = df.to_csv(index=False).encode("utf-8")
 st.download_button("Download CSV", csv, "data.csv", "text/csv", key="download_csv")
