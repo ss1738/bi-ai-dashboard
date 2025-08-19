@@ -5,6 +5,7 @@ from sklearn.cluster import KMeans
 from sklearn.ensemble import IsolationForest
 from statsmodels.tsa.arima.model import ARIMA
 
+# --- Page Config ---
 st.set_page_config(page_title="📊 AI BI Dashboard", layout="wide")
 
 st.title("📊 Interactive BI Dashboard + 🤖 AI Insights")
@@ -45,7 +46,9 @@ if time_col:
         df = df[(df[time_col] >= pd.to_datetime(dr[0])) & (df[time_col] <= pd.to_datetime(dr[1]))]
 
 # --- Tabs ---
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Dashboard", "📌 Segmentation", "⚠️ Anomalies", "🔮 Forecast", "🤖 AI Insights"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "📊 Dashboard", "📌 Segmentation", "⚠️ Anomalies", "🔮 Forecast", "🤖 AI Insights"
+])
 
 # --- Dashboard ---
 with tab1:
@@ -63,17 +66,17 @@ with tab1:
         fig_ts = px.line(df.sort_values(time_col), x=time_col, y="sales",
                          color=cat_col if cat_col else None,
                          markers=True, title="Sales Over Time")
-        st.plotly_chart(fig_ts, use_container_width=True, key="line_chart")
+        st.plotly_chart(fig_ts, use_container_width=True)
 
     if cat_col and "sales" in df:
         gp = df.groupby(cat_col, as_index=False)["sales"].sum()
         fig_bar = px.bar(gp, x=cat_col, y="sales", title="Sales by Category")
-        st.plotly_chart(fig_bar, use_container_width=True, key="bar_chart")
+        st.plotly_chart(fig_bar, use_container_width=True)
 
     if cat_col and "profit" in df:
         gp2 = df.groupby(cat_col, as_index=False)["profit"].sum()
         fig_pie = px.pie(gp2, names=cat_col, values="profit", title="Profit Share by Category")
-        st.plotly_chart(fig_pie, use_container_width=True, key="pie_chart")
+        st.plotly_chart(fig_pie, use_container_width=True)
 
 # --- Segmentation ---
 with tab2:
@@ -84,7 +87,7 @@ with tab2:
             kmeans = KMeans(n_clusters=3, random_state=42).fit(X)
             df["segment"] = kmeans.labels_
             fig_seg = px.scatter(df, x="sales", y="profit", color="segment", title="Customer Segments")
-            st.plotly_chart(fig_seg, use_container_width=True, key="seg_chart")
+            st.plotly_chart(fig_seg, use_container_width=True)
         except Exception as e:
             st.error(f"Segmentation failed: {e}")
     else:
@@ -100,7 +103,7 @@ with tab3:
             anomalies = df[df["anomaly"] == -1]
             fig_anom = px.scatter(df, x=time_col, y="sales", color="anomaly",
                                   title="Anomalies in Sales (red = anomaly)")
-            st.plotly_chart(fig_anom, use_container_width=True, key="anom_chart")
+            st.plotly_chart(fig_anom, use_container_width=True)
             st.write("Detected anomalies:", anomalies)
         except Exception as e:
             st.error(f"Anomaly detection failed: {e}")
@@ -120,7 +123,7 @@ with tab4:
             fc_df = pd.DataFrame({"date": forecast.index, "forecast": forecast.values})
             fig_fc = px.line(ts, x=ts.index, y=ts.values, title="7-Day Sales Forecast")
             fig_fc.add_scatter(x=fc_df["date"], y=fc_df["forecast"], mode="lines+markers", name="Forecast")
-            st.plotly_chart(fig_fc, use_container_width=True, key="forecast_chart")
+            st.plotly_chart(fig_fc, use_container_width=True)
         except Exception as e:
             st.error(f"Forecasting failed: {e}")
     else:
@@ -130,9 +133,9 @@ with tab4:
 with tab5:
     st.subheader("🤖 AI Insights")
     st.write("This is a placeholder for LLM-powered insights (future integration).")
-    st.info("Example: 'Sales dropped on weekends compared to weekdays' or 'Electronics category drives 40% of total profit'.")
+    st.info("Example: 'Sales dropped on weekends compared to weekdays' or 'Electronics drives 40% of profit'.")
 
 # --- Download ---
 st.subheader("⬇️ Download Data")
 csv = df.to_csv(index=False).encode("utf-8")
-st.download_button("Download CSV", csv, "data.csv", "text/csv", key="download_csv")
+st.download_button("Download CSV", csv, "data.csv", "text/csv")
