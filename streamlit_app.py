@@ -17,9 +17,14 @@ st.caption(
 
 # ------------------ Data load ------------------
 with st.sidebar:
-    st.header("📁 Dataset")
-    up = st.file_uploader("Upload CSV (optional)", type=["csv"], key="u_csv")
-    use_demo = st.checkbox("Use demo data", value=(up is None), key="use_demo")
+    st.markdown("### 📬 Get updates")
+    email = st.text_input("Your email (optional)")
+    if st.button("Notify me"):
+        st.success("Thanks! We’ll notify you about updates.")
+        # (Optional) Append to local CSV in memory-safe way if running locally:
+        # with open("emails.csv", "a") as f: f.write(email + "\n")
+        # On Streamlit Cloud, prefer linking a Google Form instead.
+
 
 if use_demo:
     df = pd.DataFrame({
@@ -105,6 +110,9 @@ with st.sidebar:
         d1, d2 = st.date_input("Date range", [dmin.date(), dmax.date()], key="f_dates")
     else:
         d1 = d2 = None
+        st.sidebar.markdown("---")
+st.sidebar.markdown("🐞 Problems? [Report here](mailto:youremail@example.com)")
+
 
 fdf = clean.copy()
 if cat_col and sel_cats:
