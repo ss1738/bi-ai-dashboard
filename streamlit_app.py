@@ -1,3 +1,9 @@
+from io import BytesIO
+
+def fig_to_png_bytes(fig):
+    # Requires kaleido in requirements.txt
+    return fig.to_image(format="png", scale=2)
+
 import streamlit as st
 import pandas as pd
 import plotly.express as px
