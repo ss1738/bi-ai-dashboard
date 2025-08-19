@@ -16,10 +16,11 @@ df = pd.DataFrame({
                  "Fashion","Groceries","Electronics","Fashion","Groceries","Electronics","Fashion"],
     "sales":  [2000,1500,800,3000,2200,1200,2500,1800,1100,2700,2100,900,2600,1900],
     "profit": [ 300, 200,100, 500, 350, 150, 400, 260, 130, 420, 320,120, 410, 280],
-})
+f = st.file_uploader("Upload CSV", type=["csv"])
 
+if f:
+    df = pd.read_csv(f)
 else:
-    st.info("📂 No file uploaded — using demo data.")
     df = pd.DataFrame({
         "date": pd.date_range("2024-01-01", periods=14, freq="D"),
         "category": ["Electronics","Fashion","Groceries","Electronics","Fashion","Groceries","Electronics",
