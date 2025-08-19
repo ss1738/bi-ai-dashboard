@@ -104,13 +104,50 @@ with tab_ov:
         margin = 100 * fdf["profit"].sum() / fdf["sales"].sum()
         c5.metric("Profit Margin %", f"{margin:.1f}%")
 
-    st.markdown("### Charts")
+        st.markdown("### Charts")
     # Pick sensible defaults
     y_pref = [c for c in ["sales","profit","units"] if c in fdf.columns] or num_cols
     tcol = st.selectbox("Time column", options=time_cols or [None], index=0 if time_cols else 0, key="tcol")
     ycol = st.selectbox("Value", options=y_pref or [None], index=0 if y_pref else 0, key="ycol")
-    ccol = st.selectbox("Category", options([cat_col] if cat_col else []) if False else [cat_col] if cat_col else [None],
-                        index=0, key="ccol")
+    ccol = cat_col  # use detected category column if available
+
+    # Time series
+    if tcol and ycol and tcol in fdf and ycol in fdf:
+        fig_ts = px.line(
+            fdf.sort_values(tcol),
+            x=tcol, y=ycol,
+            color=ccol if (ccol in fdf) else None,
+            markers=True,
+            title=f"{ycol} over time"
+        )
+        st.plotly_chart(fig_ts, use_container_width=True)
+        try:
+            png_ts = fig_to_png_bytes(fig_ts)
+            st.download_button("⬇️ Download time-series PNG", png_ts, file_name="timeseries.png", mime="image/png")
+        except Exception as e:
+            st.caption("PNG export unavailable (kaleido not installed yet or still building).")
+
+    # Bar by category
+    if ccol in fdf and ycol in fdf:
+        gp = fdf.groupby(ccol, as_index=False)[ycol].sum().sort_values(ycol, ascending=False)
+        fig_bar = px.bar(gp, x=ccol, y=ycol, title=f"{ycol} by {ccol}")
+        st.plotly_chart(fig_bar, use_container_width=True)
+        try:
+            png_bar = fig_to_png_bytes(fig_bar)
+            st.download_button("⬇️ Download category bar PNG", png_bar, file_name="by_category.png", mime="image/png")
+        except Exception:
+            st.caption("PNG export unavailable (kaleido not installed yet or still building).")
+
+    # Profit share pie
+    if ccol in fdf and "profit" in fdf:
+        gp2 = fdf.groupby(ccol, as_index=False)["profit"].sum()
+        fig_pie = px.pie(gp2, names=ccol, values="profit", title="Profit share by category")
+        st.plotly_chart(fig_pie, use_container_width=True)
+        try:
+            png_pie = fig_to_png_bytes(fig_pie)
+            st.download_button("⬇️ Download profit pie PNG", png_pie, file_name="profit_share.png", mime="image/png")
+        except Exception:
+            st.caption("PNG export unavailable (kaleido not installed yet or still building).")
 
     # Time series
     if tcol and ycol and tcol in fdf and ycol in fdf:
