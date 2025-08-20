@@ -4,21 +4,20 @@
 # Tabs: Home | Dashboard | Segmentation | Anomaly Detection | Forecasting | Early Access
 # Features:
 # - Professional UI with animated gradient, cards, and clean navigation
-# - Realistic demo business data (daily for the last 365 days + synthetic customer-level data)
+# - Realistic demo business data (daily for last 365 days + synthetic customer-level data)
 # - Interactive charts (Plotly with graceful fallback)
-# - RFM-based customer segmentation (no sklearn dependency)
-# - Robust anomaly detection (IQR-based, tunable sensitivity)
-# - Simple, dependency-free forecasting (seasonal-naive + EMA with prediction intervals)
-# - Waitlist form with Google Form integration (via st.secrets) + local CSV fallback
-# - Clear revenue recovery propositions ($500K+ scenarios), downloadables, and error handling
+# - RFM-based customer segmentation (robust percentile method)
+# - IQR-based anomaly detection
+# - Seasonal-naive + EMA forecasting with prediction intervals
+# - Waitlist form with Google Form integration via st.secrets + local CSV fallback
+# - Revenue-recovery messaging ($500K+ scenarios)
+# - Python 3.13-safe (no NumPy ints passed to timedelta, etc.)
 # -----------------------------------------------------------------------------
 
 import os
 import io
 import json
 import math
-import time
-import base64
 import textwrap
 from datetime import datetime, timedelta
 
@@ -26,7 +25,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-# Try Plotly for interactive charts; gracefully fall back to Streamlit native charts if unavailable
+# Optional libs: plotly (interactive charts) and requests (Google Form HTTP)
 PLOTLY_AVAILABLE = True
 try:
     import plotly.express as px
@@ -34,7 +33,6 @@ try:
 except Exception:
     PLOTLY_AVAILABLE = False
 
-# Try requests for Google Form POST; gracefully handle absence
 REQUESTS_AVAILABLE = True
 try:
     import requests
@@ -53,12 +51,8 @@ st.set_page_config(
 
 PRIMARY_GRADIENT = "linear-gradient(120deg, #0ea5e9 0%, #6366f1 50%, #22c55e 100%)"
 PRIMARY = "#6366f1"          # indigo-500
-ACCENT = "#0ea5e9"           # sky-500
 SUCCESS = "#22c55e"          # green-500
-WARNING = "#f59e0b"          # amber-500
 DANGER = "#ef4444"           # red-500
-MUTED = "#64748b"            # slate-500
-BG_DARK = "#0b1220"
 
 # Global CSS for premium look & responsive behavior
 st.markdown(
@@ -140,7 +134,6 @@ st.markdown(
         background: {PRIMARY_GRADIENT};
       }}
 
-      /* Responsive: tighten paddings on mobile */
       @media (max-width: 768px) {{
         .kpi-value {{ font-size: 22px; }}
         .section-title {{ font-size: 18px; }}
@@ -170,6 +163,31 @@ def fmt_pct(x: float) -> str:
     except Exception:
         return "0.00%"
 
+def pct_delta(cur, prev):
+    try:
+        prev = float(prev)
+        return 0.0 if prev == 0 else (float(cur) - prev) / prev
+    except Exception:
+        return 0.0
+
+def safe_mean(s: pd.Series, fallback: float = 0.0) -> float:
+    try:
+        val = float(s.mean())
+        if math.isnan(val) or math.isinf(val):
+            return fallback
+        return val
+    except Exception:
+        return fallback
+
+def safe_sum(s: pd.Series, fallback: float = 0.0) -> float:
+    try:
+        val = float(s.sum())
+        if math.isnan(val) or math.isinf(val):
+            return fallback
+        return val
+    except Exception:
+        return fallback
+
 def download_button(df: pd.DataFrame, label: str, filename: str):
     buf = io.StringIO()
     df.to_csv(buf, index=False)
@@ -177,7 +195,7 @@ def download_button(df: pd.DataFrame, label: str, filename: str):
 
 
 # -----------------------------------------------------------------------------
-# Demo Data (cached)
+# Demo Data (cached) — Python 3.13-safe (no NumPy ints in timedelta!)
 # -----------------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def generate_demo_data(seed: int = 42):
@@ -241,14 +259,17 @@ def generate_demo_data(seed: int = 42):
     frequency = []
     monetary = []
     for i in range(n_customers):
-        # Heavier buyers trend to more recent last purchase
-        fp = pd.Timestamp(first_purchase_dates[i]).to_pydatetime().date()
-        recent_bias = rng.integers(0, 200)
-        lp = min(today, fp + timedelta(days=recent_bias + rng.integers(0, 60)))
+        fp = pd.Timestamp(first_purchase_dates[i]).date()
+        recent_bias = int(rng.integers(0, 200))  # cast for timedelta safety
+        extra = int(rng.integers(0, 60))         # cast for timedelta safety
+        lp_date = fp + timedelta(days=int(recent_bias + extra))
+        lp = min(today, lp_date)
         last_purchase_dates.append(lp)
-        freq = max(1, int(rng.poisson(2) + (today - lp).days < 60))
+        freq_base = int(rng.poisson(2))  # cast numpy int -> py int
+        recent_boost = 1 if (today - lp).days < 60 else 0
+        freq = max(1, int(freq_base + recent_boost))
         frequency.append(freq)
-        monetary.append(max(20, rng.normal(65, 25)))
+        monetary.append(max(20.0, float(rng.normal(65, 25))))
     customers = pd.DataFrame({
         "customer_id": cust_ids,
         "first_purchase": pd.to_datetime(first_purchase_dates),
@@ -263,19 +284,11 @@ def generate_demo_data(seed: int = 42):
 
 kpis, customers = generate_demo_data()
 
-# Derived metrics
+# Derived windows
 today = kpis["date"].max().date()
 last_30 = kpis[kpis["date"] >= (pd.Timestamp(today) - pd.Timedelta(days=30))]
 prev_30 = kpis[(kpis["date"] < (pd.Timestamp(today) - pd.Timedelta(days=30))) &
                (kpis["date"] >= (pd.Timestamp(today) - pd.Timedelta(days=60)))]
-
-def pct_delta(cur, prev):
-    try:
-        if prev == 0:
-            return 0.0
-        return (cur - prev) / prev
-    except Exception:
-        return 0.0
 
 # -----------------------------------------------------------------------------
 # Reusable Viz Helpers
@@ -329,35 +342,36 @@ def plot_scatter(df: pd.DataFrame, x: str, y: str, color: str, title: str, toolt
 # KPI Cards
 # -----------------------------------------------------------------------------
 def kpi_card(title: str, value, delta: float = None, delta_hint: str = "vs prev 30d"):
-    col = st.container()
-    with col:
-        st.markdown('<div class="kpi-card">', unsafe_allow_html=True)
-        st.markdown(f'<div class="kpi-title">{title}</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="kpi-value">{value}</div>', unsafe_allow_html=True)
-        if delta is not None:
-            color = SUCCESS if delta >= 0 else DANGER
-            sign = "▲" if delta >= 0 else "▼"
-            st.markdown(
-                f'<div class="kpi-delta" style="color:{color}">{sign} {delta*100:.2f}% {delta_hint}</div>',
-                unsafe_allow_html=True,
-            )
-        st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('<div class="kpi-card">', unsafe_allow_html=True)
+    st.markdown(f'<div class="kpi-title">{title}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="kpi-value">{value}</div>', unsafe_allow_html=True)
+    if delta is not None:
+        color = SUCCESS if delta >= 0 else DANGER
+        sign = "▲" if delta >= 0 else "▼"
+        st.markdown(
+            f'<div class="kpi-delta" style="color:{color}">{sign} {delta*100:.2f}% {delta_hint}</div>',
+            unsafe_allow_html=True,
+        )
+    st.markdown('</div>', unsafe_allow_html=True)
 
 
 # -----------------------------------------------------------------------------
-# Segmentation (RFM)
+# Segmentation (robust percentile RFM to avoid qcut label mismatches)
 # -----------------------------------------------------------------------------
+def quintile_score(series: pd.Series, reverse: bool = False) -> pd.Series:
+    """Map values to 1..5 quintile scores using percent ranks. reverse=True => smaller is better."""
+    ranks = series.rank(method="first", pct=True)
+    pct = (1 - ranks) if reverse else ranks
+    scores = np.ceil(pct * 5).astype(int)
+    return scores.clip(1, 5)
+
 def rfm_segmentation(df: pd.DataFrame) -> pd.DataFrame:
-    # Scores 1 (worst) to 5 (best)
-    r_bins = pd.qcut(df["recency_days"], q=5, duplicates="drop", labels=[5,4,3,2,1])
-    f_bins = pd.qcut(df["frequency"].rank(method="first"), q=5, duplicates="drop", labels=[1,2,3,4,5])
-    m_bins = pd.qcut(df["monetary"], q=5, duplicates="drop", labels=[1,2,3,4,5])
     out = df.copy()
-    out["R"] = r_bins.astype(int)
-    out["F"] = f_bins.astype(int)
-    out["M"] = m_bins.astype(int)
+    out["R"] = quintile_score(out["recency_days"], reverse=True)   # fewer days -> higher score
+    out["F"] = quintile_score(out["frequency"], reverse=False)
+    out["M"] = quintile_score(out["monetary"], reverse=False)
     out["RFM_Score"] = out["R"]*100 + out["F"]*10 + out["M"]
-    # Rule-based segment labels
+
     seg = []
     for _, row in out.iterrows():
         if row["R"] >= 4 and row["F"] >= 4 and row["M"] >= 4:
@@ -398,26 +412,24 @@ def iqr_anomalies(series: pd.Series, window:int=14, sensitivity: float=1.5):
 def seasonal_naive_forecast(df: pd.DataFrame, y: str, periods: int=30, season:int=7):
     """
     Forecast next 'periods' using seasonal naive (value = last season's same-period)
-    plus an EMA drift component. Returns forecast df with PI (±1.96*residual_std).
+    with a gentle EMA drift. Returns forecast df with PI (±1.96*residual_std).
+    df must have columns: ['date', y]
     """
     hist = df.set_index("date")[y].astype(float)
-    # EMA drift
     ema = hist.ewm(alpha=0.3).mean()
-    # Residuals for PI
     resid = hist - ema
     resid_std = float(np.nanstd(resid[-90:])) if len(resid) >= 30 else float(np.nanstd(resid))
 
     last_date = df["date"].max()
     future_dates = pd.date_range(last_date + pd.Timedelta(days=1), periods=periods, freq="D")
     fc_vals = []
-    for i, d in enumerate(future_dates):
+    for i, _ in enumerate(future_dates):
         if len(hist) >= season:
             seasonal_idx = -season + (i % season)
             base = float(hist.iloc[seasonal_idx])
         else:
             base = float(hist.iloc[-1])
         drift = float(ema.iloc[-1]) - float(ema.iloc[-season]) if len(ema) > season else 0.0
-        # Smooth drift over the horizon
         fc = base + (drift * ((i+1)/periods))
         fc_vals.append(fc)
 
@@ -425,8 +437,9 @@ def seasonal_naive_forecast(df: pd.DataFrame, y: str, periods: int=30, season:in
         "date": future_dates,
         "forecast": fc_vals,
     })
-    forecast["pi_low"] = forecast["forecast"] - 1.96 * resid_std
-    forecast["pi_high"] = forecast["forecast"] + 1.96 * resid_std
+    pi = 1.96 * resid_std
+    forecast["pi_low"] = forecast["forecast"] - pi
+    forecast["pi_high"] = forecast["forecast"] + pi
     return forecast
 
 
@@ -438,31 +451,24 @@ def revenue_recovery_opportunity(df_last_30: pd.DataFrame):
     Estimate recoverable revenue with two levers:
       - Reduce refund_rate by 1.0 percentage point
       - Lift conversion_rate by 0.3 percentage point
-    Returns dict with amounts and total.
     """
     if len(df_last_30) == 0:
         return {"conv_uplift": 0.0, "refund_reduction": 0.0, "total": 0.0}
 
     sessions = float(df_last_30["sessions"].sum())
-    cur_conv = float(df_last_30["conversion_rate"].mean())
-    cur_aov = float(df_last_30["aov"].mean())
-    cur_refund = float(df_last_30["refund_rate"].mean())
+    cur_aov = safe_mean(df_last_30["aov"], 60.0)
 
-    delta_conv = 0.003  # +0.30pp
+    delta_conv = 0.003   # +0.30pp
     delta_refund = -0.010  # -1.0pp
-    # Conversion uplift revenue (gross)
+
     add_orders = sessions * delta_conv
     conv_uplift = add_orders * cur_aov
-    # Refund reduction on existing gross revenue
+
     gross_rev = float(df_last_30["gross_revenue"].sum())
     refund_reduction = gross_rev * abs(delta_refund)
 
     total = conv_uplift + refund_reduction
-    return {
-        "conv_uplift": conv_uplift,
-        "refund_reduction": refund_reduction,
-        "total": total
-    }
+    return {"conv_uplift": conv_uplift, "refund_reduction": refund_reduction, "total": total}
 
 
 # -----------------------------------------------------------------------------
@@ -509,31 +515,24 @@ tab_home, tab_dash, tab_seg, tab_ano, tab_fc, tab_wait = st.tabs(
 with tab_home:
     with st.container():
         c1, c2, c3, c4 = st.columns(4)
-        # Current vs previous 30d aggregates
         cur_rev = float(last_30["net_revenue"].sum())
         prev_rev = float(prev_30["net_revenue"].sum())
         cur_orders = int(last_30["orders"].sum())
-        prev_orders = int(prev_30["orders"].sum())
-        cur_conv = float(last_30["conversion_rate"].mean())
-        prev_conv = float(prev_30["conversion_rate"].mean()) if len(prev_30) else cur_conv
-        cur_ref = float(last_30["refund_rate"].mean())
-        prev_ref = float(prev_30["refund_rate"].mean()) if len(prev_30) else cur_ref
+        prev_orders = int(prev_30["orders"].sum()) if len(prev_30) else 0
+        cur_conv = safe_mean(last_30["conversion_rate"])
+        prev_conv = safe_mean(prev_30["conversion_rate"], cur_conv)
+        cur_ref = safe_mean(last_30["refund_rate"])
+        prev_ref = safe_mean(prev_30["refund_rate"], cur_ref)
 
-        kpi_card("Net Revenue (30d)", fmt_money(cur_rev), pct_delta(cur_rev, prev_rev))
+        with c1:
+            kpi_card("Net Revenue (30d)", fmt_money(cur_rev), pct_delta(cur_rev, prev_rev))
         with c2:
-            st.markdown('<div class="kpi-card">', unsafe_allow_html=True)
-            st.markdown('<div class="kpi-title">Orders (30d)</div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="kpi-value">{cur_orders:,}</div>', unsafe_allow_html=True)
-            delt = pct_delta(cur_orders, prev_orders)
-            sign = "▲" if delt >= 0 else "▼"
-            color = SUCCESS if delt >= 0 else DANGER
-            st.markdown(
-                f'<div class="kpi-delta" style="color:{color}">{sign} {delt*100:.2f}% vs prev 30d</div>',
-                unsafe_allow_html=True
-            )
-            st.markdown('</div>', unsafe_allow_html=True)
-        kpi_card("Avg Conversion Rate", fmt_pct(cur_conv), pct_delta(cur_conv, prev_conv))
-        kpi_card("Avg Refund Rate", fmt_pct(cur_ref), -pct_delta(cur_ref, prev_ref))  # inverted (lower is better)
+            kpi_card("Orders (30d)", f"{cur_orders:,}", pct_delta(cur_orders, prev_orders))
+        with c3:
+            kpi_card("Avg Conversion Rate", fmt_pct(cur_conv), pct_delta(cur_conv, prev_conv))
+        with c4:
+            # Invert delta (lower refund is better)
+            kpi_card("Avg Refund Rate", fmt_pct(cur_ref), -pct_delta(cur_ref, prev_ref))
 
     opportunity = revenue_recovery_opportunity(last_30)
     st.markdown(
@@ -543,7 +542,8 @@ with tab_home:
         """, unsafe_allow_html=True
     )
     c1, c2, c3 = st.columns(3)
-    kpi_card("Conversion Uplift", fmt_money(opportunity["conv_uplift"]))
+    with c1:
+        kpi_card("Conversion Uplift", fmt_money(opportunity["conv_uplift"]))
     with c2:
         kpi_card("Refund Reduction", fmt_money(opportunity["refund_reduction"]))
     with c3:
@@ -566,10 +566,14 @@ with tab_home:
 with tab_dash:
     st.markdown("<div class='section-title'>Business Overview</div>", unsafe_allow_html=True)
     c1, c2, c3, c4 = st.columns(4)
-    kpi_card("Gross Revenue (30d)", fmt_money(float(last_30["gross_revenue"].sum())))
-    kpi_card("Net Revenue (30d)", fmt_money(float(last_30["net_revenue"].sum())))
-    kpi_card("AOV (30d avg)", fmt_money(float(last_30["aov"].mean())))
-    kpi_card("Sessions (30d)", f"{int(last_30['sessions'].sum()):,}")
+    with c1:
+        kpi_card("Gross Revenue (30d)", fmt_money(float(last_30["gross_revenue"].sum())))
+    with c2:
+        kpi_card("Net Revenue (30d)", fmt_money(float(last_30["net_revenue"].sum())))
+    with c3:
+        kpi_card("AOV (30d avg)", fmt_money(float(last_30["aov"].mean())))
+    with c4:
+        kpi_card("Sessions (30d)", f"{int(last_30['sessions'].sum()):,}")
 
     left, right = st.columns([0.62, 0.38], gap="large")
 
@@ -579,15 +583,16 @@ with tab_dash:
 
     with right:
         st.markdown("<div class='section-title'>AI Insights</div>", unsafe_allow_html=True)
-        # Lightweight heuristic insights:
         last_7 = kpis[kpis["date"] >= (pd.Timestamp(today) - pd.Timedelta(days=7))]
-        trend_rev = pct_delta(float(last_7["net_revenue"].sum()), float(kpis[(kpis["date"] >= (pd.Timestamp(today) - pd.Timedelta(days=14))) & (kpis["date"] < (pd.Timestamp(today) - pd.Timedelta(days=7)))]["net_revenue"].sum() or 1))
-        trend_conv = pct_delta(float(last_7["conversion_rate"].mean()), float(kpis[(kpis["date"] >= (pd.Timestamp(today) - pd.Timedelta(days=14))) & (kpis["date"] < (pd.Timestamp(today) - pd.Timedelta(days=7)))]["conversion_rate"].mean() or 0.0001))
+        prev_7 = kpis[(kpis["date"] < (pd.Timestamp(today) - pd.Timedelta(days=0))) &
+                      (kpis["date"] >= (pd.Timestamp(today) - pd.Timedelta(days=14)))]
+        trend_rev = pct_delta(safe_sum(last_7["net_revenue"]), safe_sum(prev_7["net_revenue"]))
+        trend_conv = pct_delta(safe_mean(last_7["conversion_rate"], 0.0001), safe_mean(prev_7["conversion_rate"], 0.0001))
         top_refund_window = kpis.sort_values("refund_rate", ascending=False).head(5)[["date","refund_rate"]]
         bullets = [
             f"Net revenue {'increased' if trend_rev>=0 else 'decreased'} **{abs(trend_rev)*100:.1f}%** week-over-week.",
             f"Conversion rate {'improved' if trend_conv>=0 else 'declined'} **{abs(trend_conv)*100:.1f}%** vs prior week.",
-            f"Highest refund rate days: {', '.join([d.strftime('%b %d') for d in top_refund_window['date']])}.",
+            f"Highest refund rate days: {', '.join([pd.to_datetime(d).strftime('%b %d') for d in top_refund_window['date']])}.",
             f"Projected **{fmt_money(revenue_recovery_opportunity(last_30)['total'])}** recoverable with targeted plays (checkout friction & proactive refund interception).",
         ]
         st.markdown("\n".join([f"- {b}" for b in bullets]))
@@ -640,7 +645,7 @@ with tab_seg:
         kpi_card("Churn Risk", f"{int((seg_df['segment']=='Churn Risk').sum()):,}")
         kpi_card("Promising", f"{int((seg_df['segment']=='Promising').sum()):,}")
 
-    st.markdown("<div class='section-sub'>Segments are computed with quantile-based RFM scoring — no heavy dependencies required.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-sub'>Segments are computed with percentile-based RFM scoring — robust and dependency-light.</div>", unsafe_allow_html=True)
 
     if PLOTLY_AVAILABLE:
         fig = px.bar(seg_counts, x="segment", y="customers", title="Segment Counts")
@@ -658,9 +663,11 @@ with tab_seg:
         st.bar_chart(seg_counts.set_index("segment"))
 
     # Monetary vs Recency scatter
-    plot_scatter(seg_df.sample(min(1500, len(seg_df)), random_state=7),
-                 x="recency_days", y="monetary", color="segment",
-                 title="Monetary vs Recency by Segment", tooltip=["frequency","customer_id"])
+    sample_n = min(1500, len(seg_df))
+    if sample_n > 0:
+        plot_scatter(seg_df.sample(sample_n, random_state=7),
+                     x="recency_days", y="monetary", color="segment",
+                     title="Monetary vs Recency by Segment", tooltip=["frequency","customer_id"])
 
     with st.expander("Download Segmentation Data"):
         download_button(seg_df, "Download RFM Segmentation (CSV)", "rfm_segmentation.csv")
@@ -703,7 +710,8 @@ with tab_fc:
     horizon = st.slider("Horizon (days)", min_value=14, max_value=60, value=30, step=1)
 
     try:
-        fc = seasonal_naive_forecast(kpis[["date", target_metric]].rename(columns={target_metric: "y", "date":"date"}), "y", periods=horizon)
+        df_fc = kpis[["date", target_metric]].rename(columns={target_metric: "y"})
+        fc = seasonal_naive_forecast(df_fc, "y", periods=horizon)
         hist = kpis[["date", target_metric]].tail(180).copy()
 
         if PLOTLY_AVAILABLE:
@@ -734,7 +742,6 @@ with tab_fc:
             st.line_chart(hist.set_index("date")[target_metric])
             st.line_chart(fc.set_index("date")["forecast"])
 
-        # Summarize forecast totals & recovery
         forecast_total = float(fc["forecast"].sum())
         st.markdown("<div class='section-title' style='margin-top:18px;'>Summary</div>", unsafe_allow_html=True)
         st.write(f"Projected {target_metric.replace('_',' ')} over next {horizon} days: **{fmt_money(forecast_total)}**.")
@@ -789,8 +796,7 @@ with tab_wait:
             if not form_action or not fields_json:
                 return False, "Google Form secrets not configured."
 
-            mapping = json.loads(fields_json)  # {"name":"entry.12345", "email":"entry.67890", ...}
-
+            mapping = json.loads(fields_json)  # {"name":"entry.12345", ...}
             payload = {}
             for k, v in row.items():
                 if k in mapping:
@@ -824,13 +830,11 @@ with tab_wait:
                 "estimated_lost_revenue": est_lost,
                 "use_case": use_case.strip(),
             }
-            # Attempt Google Form first if configured
             ok_gf, msg_gf = submit_google_form(row)
             if ok_gf:
                 st.success("You're on the list! We'll be in touch soon.")
                 st.balloons()
             else:
-                # Local CSV fallback
                 ok_local, msg_local = save_local_csv(row)
                 if ok_local:
                     st.success("You're on the list! (Saved locally). We'll be in touch soon.")
