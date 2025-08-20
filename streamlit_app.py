@@ -1,21 +1,12 @@
 # AI BI Dashboard – Streamlit (Polished + Waitlist)
 # -------------------------------------------------
-# Copy-paste this into `streamlit_app.py` and deploy on Streamlit Cloud.
-# 
-# Optional: add the following to `.streamlit/secrets.toml` to enable Google Form direct/iframe modes
+# Save as: streamlit_app.py
 #
-# [WAITLIST]
-# # Option A: simple iframe embed (recommended if you already have a Form URL)
-# google_form_iframe_url = "https://docs.google.com/forms/d/e/FORM_ID/viewform?embedded=true"
-#
-# # Option B: Direct POST to Google Form (requires the form_id and entry ids)
-# use_direct_post = true
-# form_id = "FORM_ID"                    # e.g., 1FAIpQLSc... (keep the whole ID from the /d/e/<id>/ path)
-# email_entry_id = "entry.123456789"     # replace with your Google Form field id for Email
-# name_entry_id = "entry.987654321"      # optional name field id
-# extra_entry_id = "entry.135792468"     # optional free-text field id
-#
-# TIP: To find entry ids: open the live form > Inspect the Email input element > look for name="entry.xxxxxxx".
+# Quick setup:
+# 1) Create `.streamlit/secrets.toml` (optional, see WAITLIST section below)
+# 2) requirements.txt:
+#    pandas\nnumpy\nscikit-learn\nstatsmodels\naltair\nrequests
+# 3) Deploy to Streamlit Cloud.
 # -------------------------------------------------
 
 import io
@@ -34,14 +25,12 @@ import pandas as pd
 import streamlit as st
 import altair as alt
 
-# ML / Stats (lightweight)
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
 from sklearn.ensemble import IsolationForest
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
-# Networking (for Google Forms direct submit)
 try:
     import requests
 except Exception:
@@ -55,7 +44,7 @@ st.set_page_config(
 )
 
 # ----------------------------
-# Small CSS polish
+# Light CSS polish
 # ----------------------------
 st.markdown(
     """
@@ -65,16 +54,13 @@ st.markdown(
       .stTabs [data-baseweb="tab-list"] {gap: 6px;}
       .stTabs [data-baseweb="tab"] {background: #f7f7f9; padding: 10px 12px; border-radius: 10px; border: 1px solid #eee;}
       .stTabs [aria-selected="true"] {background: white; border-color: #ddd;}
-      .ok {color: #0fa;}
-      .warn {color: #e6a700;}
-      .err {color: #e63946;}
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 # ----------------------------
-# Config via Secrets
+# WAITLIST config via secrets
 # ----------------------------
 @dataclass
 class WaitlistConfig:
@@ -104,14 +90,13 @@ def get_waitlist_config() -> WaitlistConfig:
 WAITLIST_CFG = get_waitlist_config()
 
 # ----------------------------
-# Utility / Data Helpers
+# Utilities & Data helpers
 # ----------------------------
 
 def _find_datetime_column(df: pd.DataFrame) -> Optional[str]:
     for col in df.columns:
         if np.issubdtype(df[col].dtype, np.datetime64):
             return col
-    # try parse common names
     for guess in ["date", "timestamp", "time", "datetime"]:
         if guess in df.columns:
             try:
@@ -135,20 +120,18 @@ def load_data(file) -> pd.DataFrame:
         elif name.lower().endswith((".xlsx", ".xls")):
             df = pd.read_excel(file)
         else:
-            df = pd.read_csv(file)  # best effort
+            df = pd.read_csv(file)
     except Exception as e:
         st.error(f"Failed to read file: {e}")
         return pd.DataFrame()
 
-    # best-effort parse datetimes
+    # Best-effort parse common datetime columns
     for col in df.columns:
-        if df[col].dtype == object:
-            # try only obvious datetime columns
-            if any(k in col.lower() for k in ["date", "time"]):
-                try:
-                    df[col] = pd.to_datetime(df[col])
-                except Exception:
-                    pass
+        if df[col].dtype == object and any(k in col.lower() for k in ["date", "time"]):
+            try:
+                df[col] = pd.to_datetime(df[col])
+            except Exception:
+                pass
     return df
 
 
@@ -183,16 +166,12 @@ def make_demo_data(n_days: int = 365, seed: int = 7) -> pd.DataFrame:
     return df
 
 
-def safe_number(x) -> float:
-    try:
-        return float(x)
-    except Exception:
-        return float("nan")
-
-
 def kpi_card(label: str, value: str, helptext: str = ""):
     with st.container(border=True):
-        st.markdown(f"<div class='metric-card'><h4>{label}</h4><h2>{value}</h2>\n<p class='small-muted'>{helptext}</p></div>", unsafe_allow_html=True)
+        st.markdown(
+            f"<div class='metric-card'><h4>{label}</h4><h2>{value}</h2><p class='small-muted'>{helptext}</p></div>",
+            unsafe_allow_html=True,
+        )
 
 
 def format_pct(x: float) -> str:
@@ -203,16 +182,15 @@ def format_pct(x: float) -> str:
 
 
 # ----------------------------
-# Sidebar – data & global filters
+# Sidebar: Data source + filters + navigation
 # ----------------------------
 st.sidebar.title("AI BI Dashboard")
-
 with st.sidebar:
-    st.caption("Upload data or use demo. We auto-detect date & basic fields.")
-    data_src = st.radio("Data source", ["Use demo data", "Upload CSV/Parquet/Excel"], index=0, horizontal=False)
+    st.caption("Upload data or use demo. We auto-detect date & fields.")
+    data_src = st.radio("Data source", ["Use demo data", "Upload CSV/Parquet/Excel"], index=0)
 
     if data_src == "Upload CSV/Parquet/Excel":
-        upl = st.file_uploader("Upload a file", type=["csv", "parquet", "xlsx", "xls"])
+        upl = st.file_uploader("Upload a file", type=["csv", "parquet", "xlsx", "xls"], key="uploader")
         df = load_data(upl)
         if df.empty:
             st.info("No data yet – using demo until a valid file is uploaded.")
@@ -220,10 +198,8 @@ with st.sidebar:
     else:
         df = make_demo_data()
 
-    # Auto-detect date column
     date_col = _find_datetime_column(df)
     if not date_col:
-        # last-resort: try parse first column as date
         try:
             df.iloc[:, 0] = pd.to_datetime(df.iloc[:, 0])
             date_col = df.columns[0]
@@ -232,16 +208,21 @@ with st.sidebar:
 
     if date_col:
         min_d, max_d = pd.to_datetime(df[date_col]).min(), pd.to_datetime(df[date_col]).max()
-        date_range = st.date_input("Date range", value=(min_d.date(), max_d.date()), min_value=min_d.date(), max_value=max_d.date())
+        date_range = st.date_input(
+            "Date range",
+            value=(min_d.date(), max_d.date()),
+            min_value=min_d.date(),
+            max_value=max_d.date(),
+            key="date_range",
+        )
     else:
         date_range = None
 
-    # Category/segment filters (best-effort)
     cat_cols = [c for c in df.columns if df[c].dtype == object]
     cat_filters = {}
-    for c in cat_cols[:3]:  # avoid bloating the sidebar
+    for i, c in enumerate(cat_cols[:3]):
         vals = sorted(df[c].dropna().unique().tolist())[:50]
-        sel = st.multiselect(f"Filter {c}", vals, default=vals)
+        sel = st.multiselect(f"Filter {c}", vals, default=vals, key=f"cat_{i}")
         cat_filters[c] = sel
 
     st.divider()
@@ -250,6 +231,7 @@ with st.sidebar:
         "Go to",
         ["📊 Dashboard", "🧩 Segmentation", "🚨 Anomalies", "📈 Forecast", "🧠 AI Insights", "🕒 Early Access Waitlist"],
         index=0,
+        key="nav",
     )
 
 # Apply filters
@@ -261,11 +243,10 @@ for c, allowed in (cat_filters or {}).items():
     if allowed:
         df = df[df[c].isin(allowed)]
 
-# Prepare numeric columns
 num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
 
 # ----------------------------
-# Top Tabs (content)
+# Top-level tabs
 # ----------------------------
 TABS = st.tabs([
     "📊 Dashboard",
@@ -277,14 +258,13 @@ TABS = st.tabs([
 ])
 
 # ----------------------------
-# TAB 1: 📊 Dashboard
+# TAB 1: Dashboard
 # ----------------------------
 with TABS[0]:
     st.markdown("### Overview")
     if date_col is None:
         st.warning("No datetime column detected. Some charts may be limited.")
 
-    # Aggregate by date
     if date_col and not df.empty:
         by_date = (
             df.assign(_date=pd.to_datetime(df[date_col]).dt.date)
@@ -294,10 +274,8 @@ with TABS[0]:
               .rename(columns={"_date": "date"})
         )
 
-        # KPIs
         rev_col = next((c for c in ["revenue", "sales", "amount", "value"] if c in df.columns), None)
         units_col = "units" if "units" in df.columns else None
-
         if rev_col is None and num_cols:
             rev_col = num_cols[0]
 
@@ -307,33 +285,25 @@ with TABS[0]:
             last = by_date.iloc[-1][rev_col]
             prev = by_date.iloc[-2][rev_col] if len(by_date) > 1 else last
             mom = ((last - prev) / prev * 100) if prev else np.nan
-            with col1: kpi_card("Total Revenue", f"£{total_rev:,.0f}", f"Yesterday vs prior: {format_pct(mom)}")
+            with col1: kpi_card("Total Revenue", f"£{total_rev:,.0f}", f"Last vs prior: {format_pct(mom)}")
         else:
             with col1: kpi_card("Total (first numeric)", f"{by_date[num_cols[0]].sum():,.0f}")
 
         if units_col and units_col in by_date.columns:
-            with col2:
-                kpi_card("Units Sold", f"{int(by_date[units_col].sum()):,}")
+            with col2: kpi_card("Units Sold", f"{int(by_date[units_col].sum()):,}")
         else:
             with col2:
                 any_second = num_cols[1] if len(num_cols) > 1 else None
-                if any_second:
-                    kpi_card("Secondary Total", f"{by_date[any_second].sum():,.0f}")
-                else:
-                    kpi_card("Rows", f"{len(df):,}")
+                kpi_card("Secondary Total", f"{by_date[any_second].sum():,.0f}" if any_second else f"Rows: {len(df):,}")
 
         if rev_col in by_date.columns and units_col and units_col in by_date.columns:
             avg_price = (by_date[rev_col].sum() / max(1, by_date[units_col].sum()))
-            with col3:
-                kpi_card("Avg Price", f"£{avg_price:,.2f}")
+            with col3: kpi_card("Avg Price", f"£{avg_price:,.2f}")
         else:
-            with col3:
-                kpi_card("Columns", f"{len(df.columns):,}")
+            with col3: kpi_card("Columns", f"{len(df.columns):,}")
 
-        with col4:
-            kpi_card("Active Days", f"{by_date['date'].nunique():,}")
+        with col4: kpi_card("Active Days", f"{by_date['date'].nunique():,}")
 
-        # Line chart
         if rev_col in by_date.columns:
             chart = alt.Chart(by_date).mark_line().encode(
                 x="date:T",
@@ -342,13 +312,11 @@ with TABS[0]:
             ).properties(height=320)
             st.altair_chart(chart, use_container_width=True)
 
-    # Category breakdowns (top 2 cats)
     cat_cols_all = [c for c in df.columns if df[c].dtype == object]
     if cat_cols_all:
         rev_col = next((c for c in ["revenue", "sales", "amount", "value"] if c in df.columns), None)
         if rev_col is None and num_cols:
             rev_col = num_cols[0]
-
         top_cols = cat_cols_all[:2]
         cols = st.columns(len(top_cols))
         for i, c in enumerate(top_cols):
@@ -367,7 +335,7 @@ with TABS[0]:
         st.dataframe(df.head(500), use_container_width=True)
 
 # ----------------------------
-# TAB 2: 🧩 Segmentation
+# TAB 2: Segmentation
 # ----------------------------
 with TABS[1]:
     st.markdown("### Customer/Product Segmentation")
@@ -394,7 +362,6 @@ with TABS[1]:
                 st.success("Segmentation complete.")
                 st.dataframe(profile, use_container_width=True)
 
-                # 2D projection via PCA
                 pca = PCA(n_components=2, random_state=42)
                 pts = pca.fit_transform(Xs)
                 plot_df = pd.DataFrame({"pc1": pts[:, 0], "pc2": pts[:, 1], "cluster": labels.astype(str)})
@@ -404,15 +371,14 @@ with TABS[1]:
                 ).properties(height=420)
                 st.altair_chart(sc, use_container_width=True)
 
-                # Download segmented data
                 out = df.copy()
                 out.loc[X.index, "cluster"] = labels
-                st.download_button("Download segmented data (CSV)", out.to_csv(index=False).encode("utf-8"), file_name="segments.csv", mime="text/csv")
+                st.download_button("Download segmented data (CSV)", out.to_csv(index=False).encode("utf-8"), file_name="segments.csv", key="dl_segments")
             except Exception as e:
                 st.error(f"Segmentation failed: {e}")
 
 # ----------------------------
-# TAB 3: 🚨 Anomalies
+# TAB 3: Anomalies
 # ----------------------------
 with TABS[2]:
     st.markdown("### Anomaly Detection")
@@ -448,7 +414,6 @@ with TABS[2]:
 
                 st.success("Anomaly scoring complete.")
 
-                # Plot
                 base = alt.Chart(agg).encode(x="date:T")
                 line = base.mark_line().encode(y="y:Q")
                 pts = base.mark_circle(size=80, opacity=0.9).encode(
@@ -459,24 +424,25 @@ with TABS[2]:
                 st.altair_chart(line + pts, use_container_width=True)
 
                 st.dataframe(agg[agg["anomaly"]], use_container_width=True)
-                st.download_button("Download anomalies (CSV)", agg[agg["anomaly"]].to_csv(index=False).encode("utf-8"), file_name="anomalies.csv")
+                st.download_button("Download anomalies (CSV)", agg[agg["anomaly"]].to_csv(index=False).encode("utf-8"), file_name="anomalies.csv", key="dl_anoms")
             except Exception as e:
                 st.error(f"Anomaly detection failed: {e}")
 
 # ----------------------------
-# TAB 4: 📈 Forecast
+# TAB 4: Forecast
 # ----------------------------
 with TABS[3]:
     st.markdown("### Forecasting (Exponential Smoothing)")
     if date_col is None:
         st.warning("Needs a datetime column.")
     else:
-        target_col = st.selectbox("Target metric", options=[c for c in [\"revenue\", \"sales\", \"amount\", \"value\"] if c in df.columns] or num_cols, key="fc_target")
-        gran = st.selectbox("Granularity", [\"D\", \"W\", \"M\"], index=0, key="fc_gran")
-        horizon = st.slider("Forecast horizon (periods)", 7 if gran == \"D\" else 8, 60, 30)
-
-        ts = (("Granularity", ["D", "W", "M"], index=0)
-        horizon = st.slider("Forecast horizon (periods)", 7 if gran == "D" else 8, 60, 30)
+        target_col = st.selectbox(
+            "Target metric",
+            options=[c for c in ["revenue", "sales", "amount", "value"] if c in df.columns] or num_cols,
+            key="fc_target",
+        )
+        gran = st.selectbox("Granularity", ["D", "W", "M"], index=0, key="fc_gran")
+        horizon = st.slider("Forecast horizon (periods)", 7 if gran == "D" else 8, 60, 30, key="fc_h")
 
         ts = (
             df.assign(_date=pd.to_datetime(df[date_col]).dt.to_period(gran).dt.start_time)
@@ -496,7 +462,6 @@ with TABS[3]:
                 fit = model.fit(optimized=True, use_brute=True)
                 fc = fit.forecast(horizon)
 
-                # naive PI via residual std
                 resid = fit.resid
                 sigma = resid.std() if hasattr(resid, "std") else float(np.std(resid))
                 ci_hi = fc + 1.96 * sigma
@@ -510,13 +475,13 @@ with TABS[3]:
                 band = alt.Chart(fdf).mark_area(opacity=0.2).encode(x="date:T", y="lo:Q", y2="hi:Q")
                 st.altair_chart(line_hist + band + line_fc, use_container_width=True)
 
-                st.download_button("Download forecast (CSV)", fdf.to_csv(index=False).encode("utf-8"), file_name="forecast.csv")
+                st.download_button("Download forecast (CSV)", fdf.to_csv(index=False).encode("utf-8"), file_name="forecast.csv", key="dl_fc")
                 st.success("Forecast ready.")
             except Exception as e:
                 st.error(f"Forecasting failed: {e}")
 
 # ----------------------------
-# TAB 5: 🧠 AI Insights (rules-based, no API key needed)
+# TAB 5: AI Insights (heuristic)
 # ----------------------------
 with TABS[4]:
     st.markdown("### AI-ish Insights (No API Key)")
@@ -525,14 +490,12 @@ with TABS[4]:
     if df.empty:
         st.warning("No data loaded.")
     else:
-        # Heuristic insights on top revenue groups
         rev_col = next((c for c in ["revenue", "sales", "amount", "value"] if c in df.columns), None)
         if rev_col is None and num_cols:
             rev_col = num_cols[0]
 
         insights = []
         try:
-            # Top segments by revenue
             for c in [col for col in df.columns if df[col].dtype == object][:2]:
                 top = df.groupby(c)[rev_col].sum().sort_values(ascending=False)
                 if len(top) >= 2:
@@ -542,7 +505,6 @@ with TABS[4]:
         except Exception:
             pass
 
-        # Momentum
         if date_col and rev_col in df.columns:
             tmp = df.assign(_d=pd.to_datetime(df[date_col]).dt.to_period("M").dt.start_time)
             m = tmp.groupby("_d")[rev_col].sum()
@@ -553,20 +515,18 @@ with TABS[4]:
                 insights.append(f"Growth is **{dir_txt}**: last month {gr1:,.1f}% vs prior {gr2:,.1f}%.")
 
         if not insights:
-            insights.append("Data is diverse – consider defining a revenue/units column for sharper insights.")
+            insights.append("Data is diverse – define a revenue/units column for sharper insights.")
 
         st.markdown("\n".join([f"- {x}" for x in insights]))
 
-        # Quick QA
         st.divider()
         st.markdown("**Ask a quick question** (e.g., *Which region had highest revenue?*)")
-        q = st.text_input("Question")
+        q = st.text_input("Question", key="qa_q")
         if q:
             try:
                 answer = ""
                 ql = q.lower()
                 if any(k in ql for k in ["highest", "top", "max"]) and rev_col:
-                    # try find a categorical column requested
                     target_cat = None
                     for c in [col for col in df.columns if df[col].dtype == object]:
                         if c.lower() in ql:
@@ -579,21 +539,21 @@ with TABS[4]:
                     m = df.assign(_d=pd.to_datetime(df[date_col]).dt.to_period("M").dt.start_time).groupby("_d")[rev_col].sum()
                     answer = f"Last 3 months: {', '.join([f'£{v:,.0f}' for v in m.tail(3)])}."
                 else:
-                    answer = "Try asking about *highest/lowest by [category]* or *trend/growth* questions."
+                    answer = "Try *highest/lowest by [category]* or *trend/growth* questions."
                 st.info(answer)
             except Exception as e:
                 st.error(f"Could not answer: {e}")
 
 # ----------------------------
-# TAB 6: 🕒 Early Access Waitlist (Google Form)
+# TAB 6: Early Access Waitlist
 # ----------------------------
 with TABS[5]:
     st.markdown("### Early Access Waitlist")
-    st.caption("Choose one: **iframe embed** (easiest) or **Direct POST** (captures email inside this app). Both options below.")
+    st.caption("Choose one: **iframe embed** or **Direct POST** to Google Forms, plus a simple local CSV capture.")
 
     # A) IFRAME EMBED – simplest
     with st.expander("Option A – Embed your Google Form (iframe)", expanded=bool(WAITLIST_CFG.google_form_iframe_url)):
-        form_url = st.text_input("Google Form embed URL", value=WAITLIST_CFG.google_form_iframe_url or "", placeholder="https://docs.google.com/forms/d/e/<FORM_ID>/viewform?embedded=true")
+        form_url = st.text_input("Google Form embed URL", value=WAITLIST_CFG.google_form_iframe_url or "", placeholder="https://docs.google.com/forms/d/e/<FORM_ID>/viewform?embedded=true", key="g_iframe_url")
         if form_url:
             st.components.v1.iframe(src=form_url, height=700, scrolling=True)
             st.success("Embedded form displayed above.")
@@ -607,17 +567,17 @@ with TABS[5]:
         else:
             colA, colB = st.columns(2)
             with colA:
-                form_id = st.text_input("Google Form ID", value=WAITLIST_CFG.form_id or "")
-                email_entry = st.text_input("Email entry id (entry.xxxxx)", value=WAITLIST_CFG.email_entry_id or "")
-                name_entry = st.text_input("Name entry id (optional)", value=WAITLIST_CFG.name_entry_id or "")
-                extra_entry = st.text_input("Additional free-text entry id (optional)", value=WAITLIST_CFG.extra_entry_id or "")
+                form_id = st.text_input("Google Form ID", value=WAITLIST_CFG.form_id or "", key="g_form_id")
+                email_entry = st.text_input("Email entry id (entry.xxxxx)", value=WAITLIST_CFG.email_entry_id or "", key="g_email_entry")
+                name_entry = st.text_input("Name entry id (optional)", value=WAITLIST_CFG.name_entry_id or "", key="g_name_entry")
+                extra_entry = st.text_input("Additional free-text entry id (optional)", value=WAITLIST_CFG.extra_entry_id or "", key="g_extra_entry")
             with colB:
                 st.markdown("**What users will fill**")
-                name_val = st.text_input("Your name (optional)")
-                email_val = st.text_input("Your email", placeholder="you@example.com")
-                extra_val = st.text_area("Anything else? (optional)")
+                name_val = st.text_input("Your name (optional)", key="wl_name")
+                email_val = st.text_input("Your email", placeholder="you@example.com", key="wl_email")
+                extra_val = st.text_area("Anything else? (optional)", key="wl_extra")
                 consent = st.checkbox("I agree to be contacted about Early Access.", key="consent_direct")
-                submit = st.button("Join Waitlist ✅")
+                submit = st.button("Join Waitlist ✅", key="wl_join")
 
             if submit:
                 if not (form_id and email_entry and email_val and consent):
@@ -631,13 +591,7 @@ with TABS[5]:
                         if extra_entry and extra_val:
                             payload[extra_entry] = extra_val
 
-                        # Optional Google Form params – not strictly necessary
-                        payload.update({
-                            "fvv": 1,
-                            "partialResponse": [],
-                            "pageHistory": 0,
-                            "fbzx": "-1234567890"
-                        })
+                        payload.update({"fvv": 1, "partialResponse": [], "pageHistory": 0, "fbzx": "-1234567890"})
 
                         resp = requests.post(url, data=payload, timeout=10)
                         if resp.status_code == 200:
@@ -645,29 +599,21 @@ with TABS[5]:
                             st.toast("Waitlist joined! 🎉")
                         else:
                             st.warning(f"Google Form returned status {resp.status_code}. We'll also capture locally as backup.")
-                            # local backup
                             row = {"ts": pd.Timestamp.utcnow().isoformat(), "name": name_val, "email": email_val, "extra": extra_val}
-                            try:
-                                key = "_local_waitlist"
-                                wl = st.session_state.get(key, [])
-                                wl.append(row)
-                                st.session_state[key] = wl
-                                st.success("Saved to local session backup.")
-                            except Exception:
-                                st.error("Failed to store local backup.")
+                            key_local = "_local_waitlist"
+                            wl = st.session_state.get(key_local, [])
+                            wl.append(row)
+                            st.session_state[key_local] = wl
+                            st.success("Saved to local session backup.")
                     except Exception as e:
                         st.error(f"Submit failed: {e}")
 
-        st.markdown("---")
-        st.markdown("**Debug help**: Ensure the form is set to accept responses and Email/Name questions are not required unless you pass those fields.")
-
     st.divider()
     st.markdown("#### Simple native (no Google) capture – CSV download backup")
-    st.caption("If you prefer not to use Google Forms, capture emails here and download a CSV.")
     with st.form("native_capture"):
-        n_name = st.text_input("Name (optional)")
-        n_email = st.text_input("Email")
-        n_notes = st.text_area("Notes (optional)")
+        n_name = st.text_input("Name (optional)", key="n_name")
+        n_email = st.text_input("Email", key="n_email")
+        n_notes = st.text_area("Notes (optional)", key="n_notes")
         n_ok = st.checkbox("I agree to be contacted about Early Access.", key="consent_native")
         n_submit = st.form_submit_button("Add to local list")
     if n_submit:
@@ -675,17 +621,17 @@ with TABS[5]:
             st.error("Email and consent required.")
         else:
             row = {"ts": pd.Timestamp.utcnow().isoformat(), "name": n_name, "email": n_email, "notes": n_notes}
-            key = "_native_waitlist"
-            bag = st.session_state.get(key, [])
+            key_local = "_native_waitlist"
+            bag = st.session_state.get(key_local, [])
             bag.append(row)
-            st.session_state[key] = bag
+            st.session_state[key_local] = bag
             st.success("Added.")
 
     bag = st.session_state.get("_native_waitlist", [])
     if bag:
         nd = pd.DataFrame(bag)
         st.dataframe(nd.tail(200), use_container_width=True)
-        st.download_button("Download local waitlist CSV", nd.to_csv(index=False).encode("utf-8"), file_name="waitlist_local.csv")
+        st.download_button("Download local waitlist CSV", nd.to_csv(index=False).encode("utf-8"), file_name="waitlist_local.csv", key="dl_local_wl")
 
 # ----------------------------
 # Footer
