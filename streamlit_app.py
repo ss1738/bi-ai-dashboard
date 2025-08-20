@@ -16,6 +16,7 @@ import io
 import os
 import json
 from dataclasses import dataclass
+from io import BytesIO
 from typing import Optional, List
 
 import numpy as np
@@ -23,6 +24,23 @@ import pandas as pd
 
 import streamlit as st
 import altair as alt
+
+# ---- XLSX export helper ----
+def df_to_xlsx_bytes(sheets: dict) -> bytes:
+    bio = BytesIO()
+    with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
+        for name, d in (sheets or {}).items():
+            if d is None:
+                continue
+            try:
+                # allow empty frames but write headers
+                (d if isinstance(d, pd.DataFrame) else pd.DataFrame(d)).to_excel(writer, index=False, sheet_name=(name or "sheet")[:31])
+            except Exception:
+                try:
+                    pd.DataFrame(d).to_excel(writer, index=False, sheet_name=(name or "sheet")[:31])
+                except Exception:
+                    pass
+    return bio.getvalue()
 
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
@@ -225,6 +243,22 @@ with st.sidebar:
     try:
         csv_sidebar = df.to_csv(index=False).encode("utf-8")
         st.download_button("Download filtered data (CSV)", csv_sidebar, file_name="data_filtered.csv", key="dl_sidebar")
+        # JSON + XLSX mirrors
+        try:
+            st.download_button("Download filtered (JSON)", df.to_json(orient="records").encode("utf-8"), file_name="data_filtered.json", key="dl_json_sidebar")
+        except Exception:
+            pass
+        try:
+            anoms = st.session_state.get("__last_anomalies_df")
+            fcast = st.session_state.get("__last_forecast_df")
+            xlsx_bytes = df_to_xlsx_bytes({
+                "data_filtered": df,
+                "anomalies": anoms if isinstance(anoms, pd.DataFrame) else pd.DataFrame(),
+                "forecast": fcast if isinstance(fcast, pd.DataFrame) else pd.DataFrame(),
+            })
+            st.download_button("Export (XLSX)", xlsx_bytes, file_name="export.xlsx", key="dl_xlsx_sidebar")
+        except Exception:
+            st.caption("(Install XlsxWriter for XLSX export)")
     except Exception:
         pass
 
@@ -372,6 +406,56 @@ with TABS[0]:
     st.caption("Exports the CURRENTLY FILTERED dataset shown above.")
     csv_bytes = df.to_csv(index=False).encode("utf-8")
     st.download_button("Download filtered data (CSV)", csv_bytes, file_name="data_filtered.csv", key="dl_main")
+
+    # JSON export (filtered dataset)
+    try:
+        st.download_button(
+            "Download filtered data (JSON)",
+            df.to_json(orient="records").encode("utf-8"),
+            file_name="data_filtered.json",
+            key="dl_json_main",
+        )
+    except Exception:
+        pass
+
+    # Multi-sheet XLSX: filtered + anomalies + forecast
+    anoms = st.session_state.get("__last_anomalies_df")
+    fcast = st.session_state.get("__last_forecast_df")
+    try:
+        xlsx_bytes = df_to_xlsx_bytes({
+            "data_filtered": df,
+            "anomalies": anoms if isinstance(anoms, pd.DataFrame) else pd.DataFrame(),
+            "forecast": fcast if isinstance(fcast, pd.DataFrame) else pd.DataFrame(),
+        })
+        st.download_button("Download full export (XLSX)", xlsx_bytes, file_name="export.xlsx", key="dl_xlsx_main")
+    except Exception as _e:
+        st.info("Add 'XlsxWriter' to requirements.txt for XLSX export if this button doesn't work.")
+
+    # Copy deep-link to this section
+    st.button("🔗 Copy link to this section", key="copy_dl_btn")
+    st.components.v1.html(
+        """
+        <script>
+        (function(){
+          const findBtn = () => Array.from(window.parent.document.querySelectorAll('button')).find(b => /Copy link to this section/.test(b.textContent));
+          function bind(){
+            const btn = findBtn();
+            if(!btn || btn.__bound) return;
+            btn.__bound = true;
+            btn.addEventListener('click', () => {
+              try{
+                const url = window.location.origin + window.location.pathname + '#download-data';
+                navigator.clipboard.writeText(url);
+              }catch(e){}
+            });
+          }
+          setTimeout(bind, 300);
+          setTimeout(bind, 1000);
+        })();
+        </script>
+        """,
+        height=0,
+    )
 
     st.components.v1.html(
         """
@@ -536,6 +620,8 @@ with TABS[2]:
                 st.altair_chart(line + pts, use_container_width=True)
                 st.dataframe(agg[agg["anomaly"]], use_container_width=True)
                 st.download_button("Download anomalies (CSV)", agg[agg["anomaly"]].to_csv(index=False).encode("utf-8"), file_name="anomalies.csv", key="dl_anoms")
+                # keep latest for XLSX export
+                st.session_state["__last_anomalies_df"] = agg.copy()
             except Exception as e:
                 st.error(f"Anomaly detection failed: {e}")
 
@@ -605,6 +691,8 @@ with TABS[3]:
                 band = alt.Chart(fdf).mark_area(opacity=0.2).encode(x="date:T", y="lo:Q", y2="hi:Q")
                 st.altair_chart(line_hist + band + line_fc, use_container_width=True)
                 st.download_button("Download forecast (CSV)", fdf.to_csv(index=False).encode("utf-8"), file_name="forecast.csv", key="dl_fc")
+                # keep latest for XLSX export
+                st.session_state["__last_forecast_df"] = fdf.copy()
                 st.success("Forecast ready.")
             except Exception as e:
                 st.error(f"Forecasting failed: {e}")
