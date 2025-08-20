@@ -334,6 +334,27 @@ with TABS[0]:
     with st.expander("Peek at data"):
         st.dataframe(df.head(500), use_container_width=True)
 
+    # ---- Download Data (deep-link target) ----
+    st.markdown("<div id='download-data'></div>", unsafe_allow_html=True)
+    st.subheader("Download Data")
+    st.caption("Exports the CURRENTLY FILTERED dataset shown above.")
+    csv_bytes = df.to_csv(index=False).encode("utf-8")
+    st.download_button("Download filtered data (CSV)", csv_bytes, file_name="data_filtered.csv", key="dl_filtered_main")
+
+    # Smooth-scroll to this section when visiting #download-data
+    st.components.v1.html("""
+    <script>
+    setTimeout(() => {
+      try {
+        if (window.location.hash === "#download-data") {
+          const el = document.getElementById("download-data");
+          if (el) el.scrollIntoView({behavior: "smooth", block: "start"});
+        }
+      } catch (e) {}
+    }, 400);
+    </script>
+    """, height=0)
+
 # ----------------------------
 # TAB 2: Segmentation
 # ----------------------------
