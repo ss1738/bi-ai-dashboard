@@ -747,7 +747,8 @@ with TABS[4]:
         for i, (title, text) in enumerate(cards):
             with ccols[i % len(ccols)]:
                 with st.container(border=True):
-                 st.markdown(f"**{title}**\n{summary}")
+                st.markdown(f"🔹 {metric}: {value} — {text}")
+
 
 
 {text}")
