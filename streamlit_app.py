@@ -14,7 +14,7 @@ except Exception:
 
 # ====== CONFIGURE THESE (optional) ======
 # If you want emails to auto-save to Google Forms (no backend), set:
-#  - FORM_URL: "https://docs.google.com/forms/d/e/FORM_ID/formResponse"
+#  - FORM_URL: "https://docs.google.com/forms/d/e/1FAIpQLSdz-qe3WGf-CTKHviFpsP-UjCUDpgHGOZuRDRfoSFu9JhWoWQ/viewform?usp=header"
 #  - ENTRY_ID: the entry.<digits> id of your Email field (find in browser devtools)
 FORM_URL = ""         # e.g., "https://docs.google.com/forms/d/e/1FAIpQLSf.../formResponse"
 ENTRY_ID = ""         # e.g., "entry.1234567890"
