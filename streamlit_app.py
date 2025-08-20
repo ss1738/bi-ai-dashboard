@@ -419,9 +419,9 @@ with TABS[2]:
     if date_col is None:
         st.warning("Needs a datetime column to aggregate over time.")
     else:
-        target_col = st.selectbox("Target metric", options=[c for c in ["revenue", "sales", "amount", "value"] if c in df.columns] or num_cols)
-        gran = st.selectbox("Granularity", ["D", "W", "M"], index=0, help="Aggregate by Day/Week/Month")
-        method = st.selectbox("Method", ["IsolationForest", "Z-Score"], index=0)
+        target_col = st.selectbox("Target metric", options=[c for c in ["revenue", "sales", "amount", "value"] if c in df.columns] or num_cols, key="anom_target")
+        gran = st.selectbox("Granularity", ["D", "W", "M"], index=0, help="Aggregate by Day/Week/Month", key="anom_gran")
+        method = st.selectbox("Method", ["IsolationForest", "Z-Score"], index=0, key="anom_method")
 
         agg = (
             df.assign(_date=pd.to_datetime(df[date_col]).dt.to_period(gran).dt.start_time)
@@ -471,8 +471,11 @@ with TABS[3]:
     if date_col is None:
         st.warning("Needs a datetime column.")
     else:
-        target_col = st.selectbox("Target metric", options=[c for c in ["revenue", "sales", "amount", "value"] if c in df.columns] or num_cols)
-        gran = st.selectbox("Granularity", ["D", "W", "M"], index=0)
+        target_col = st.selectbox("Target metric", options=[c for c in [\"revenue\", \"sales\", \"amount\", \"value\"] if c in df.columns] or num_cols, key="fc_target")
+        gran = st.selectbox("Granularity", [\"D\", \"W\", \"M\"], index=0, key="fc_gran")
+        horizon = st.slider("Forecast horizon (periods)", 7 if gran == \"D\" else 8, 60, 30)
+
+        ts = (("Granularity", ["D", "W", "M"], index=0)
         horizon = st.slider("Forecast horizon (periods)", 7 if gran == "D" else 8, 60, 30)
 
         ts = (
@@ -613,7 +616,7 @@ with TABS[5]:
                 name_val = st.text_input("Your name (optional)")
                 email_val = st.text_input("Your email", placeholder="you@example.com")
                 extra_val = st.text_area("Anything else? (optional)")
-                consent = st.checkbox("I agree to be contacted about Early Access.")
+                consent = st.checkbox("I agree to be contacted about Early Access.", key="consent_direct")
                 submit = st.button("Join Waitlist ✅")
 
             if submit:
@@ -665,7 +668,7 @@ with TABS[5]:
         n_name = st.text_input("Name (optional)")
         n_email = st.text_input("Email")
         n_notes = st.text_area("Notes (optional)")
-        n_ok = st.checkbox("I agree to be contacted about Early Access.")
+        n_ok = st.checkbox("I agree to be contacted about Early Access.", key="consent_native")
         n_submit = st.form_submit_button("Add to local list")
     if n_submit:
         if not (n_email and n_ok):
