@@ -4,14 +4,15 @@
 # Tabs: Home | Dashboard | Segmentation | Anomaly Detection | Forecasting | Early Access
 # Features:
 # - Professional UI with animated gradient, cards, and clean navigation
-# - Realistic demo business data (daily for last 365 days + synthetic customer-level data)
+# - URL filter support: ?region=AMER,APAC,EMEA&channel=Online,Retail,Wholesale
+# - Realistic demo business data (daily last 365d + synthetic customer data)
 # - Interactive charts (Plotly with graceful fallback)
-# - RFM-based customer segmentation (robust percentile method)
+# - RFM-based segmentation (robust percentile method)
 # - IQR-based anomaly detection
 # - Seasonal-naive + EMA forecasting with prediction intervals
-# - Waitlist form with Google Form integration via st.secrets + local CSV fallback
+# - Waitlist form (Google Form integration via st.secrets + local CSV fallback)
 # - Revenue-recovery messaging ($500K+ scenarios)
-# - Python 3.13-safe (no NumPy ints passed to timedelta, etc.)
+# - Python 3.13-safe
 # -----------------------------------------------------------------------------
 
 import os
@@ -54,7 +55,7 @@ PRIMARY = "#6366f1"          # indigo-500
 SUCCESS = "#22c55e"          # green-500
 DANGER = "#ef4444"           # red-500
 
-# Global CSS for premium look & responsive behavior
+# Global CSS
 st.markdown(
     f"""
     <style>
@@ -195,7 +196,66 @@ def download_button(df: pd.DataFrame, label: str, filename: str):
 
 
 # -----------------------------------------------------------------------------
-# Demo Data (cached) — Python 3.13-safe (no NumPy ints in timedelta!)
+# URL Filter Handling (region/channel)
+# -----------------------------------------------------------------------------
+ALL_REGIONS = ["AMER", "APAC", "EMEA"]
+ALL_CHANNELS = ["Online", "Retail", "Wholesale"]
+
+# Default mix (sums to 1.0 each)
+REGION_WEIGHTS = {"AMER": 0.45, "APAC": 0.30, "EMEA": 0.25}
+CHANNEL_WEIGHTS = {"Online": 0.60, "Retail": 0.30, "Wholesale": 0.10}
+
+def get_query_params():
+    # Streamlit >=1.32
+    try:
+        qp = st.query_params  # mapping-like
+        return {k: v for k, v in qp.items()}
+    except Exception:
+        # Older API fallback
+        try:
+            return st.experimental_get_query_params()
+        except Exception:
+            return {}
+
+def set_query_params(**kwargs):
+    try:
+        # New API
+        current = dict(get_query_params())
+        current.update({k:v for k,v in kwargs.items() if v is not None})
+        st.query_params.clear()
+        for k, v in current.items():
+            st.query_params[k] = v
+    except Exception:
+        # Fallback
+        try:
+            st.experimental_set_query_params(**kwargs)
+        except Exception:
+            pass
+
+def parse_csv_param(val, allowed):
+    if not val:
+        return allowed[:]
+    if isinstance(val, list):
+        # could be already list from Streamlit
+        raw = ",".join(val)
+    else:
+        raw = str(val)
+    selected = [x.strip() for x in raw.split(",") if x.strip()]
+    # keep only allowed ones, preserve order from allowed
+    return [a for a in allowed if a in selected] or allowed[:]
+
+def compute_filter_factor(regions_selected, channels_selected):
+    # independence assumption => factor = sum(w_r) * sum(w_c)
+    wr = sum(REGION_WEIGHTS.get(r, 0) for r in regions_selected)
+    wc = sum(CHANNEL_WEIGHTS.get(c, 0) for c in channels_selected)
+    # clamp to [0,1]; ensure nonzero minimum to avoid fully blank views
+    wr = min(max(wr, 0.0), 1.0)
+    wc = min(max(wc, 0.0), 1.0)
+    return max(wr * wc, 0.0)
+
+
+# -----------------------------------------------------------------------------
+# Demo Data (cached) — Python 3.13-safe
 # -----------------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def generate_demo_data(seed: int = 42):
@@ -260,16 +320,16 @@ def generate_demo_data(seed: int = 42):
     monetary = []
     for i in range(n_customers):
         fp = pd.Timestamp(first_purchase_dates[i]).date()
-        recent_bias = int(rng.integers(0, 200))  # cast for timedelta safety
-        extra = int(rng.integers(0, 60))         # cast for timedelta safety
+        recent_bias = int(np.int64(np.asarray(np.random.default_rng().integers(0, 200))))
+        extra = int(np.int64(np.asarray(np.random.default_rng().integers(0, 60))))
         lp_date = fp + timedelta(days=int(recent_bias + extra))
         lp = min(today, lp_date)
         last_purchase_dates.append(lp)
-        freq_base = int(rng.poisson(2))  # cast numpy int -> py int
+        freq_base = int(np.random.poisson(2))
         recent_boost = 1 if (today - lp).days < 60 else 0
         freq = max(1, int(freq_base + recent_boost))
         frequency.append(freq)
-        monetary.append(max(20.0, float(rng.normal(65, 25))))
+        monetary.append(max(20.0, float(np.random.normal(65, 25))))
     customers = pd.DataFrame({
         "customer_id": cust_ids,
         "first_purchase": pd.to_datetime(first_purchase_dates),
@@ -281,17 +341,37 @@ def generate_demo_data(seed: int = 42):
 
     return kpis, customers
 
+kpis_base, customers = generate_demo_data()
 
-kpis, customers = generate_demo_data()
+# -----------------------------------------------------------------------------
+# Apply URL Filters to KPIs
+# -----------------------------------------------------------------------------
+params = get_query_params()
+regions_selected = parse_csv_param(params.get("region"), ALL_REGIONS)
+channels_selected = parse_csv_param(params.get("channel"), ALL_CHANNELS)
+factor = compute_filter_factor(regions_selected, channels_selected)
 
-# Derived windows
+def apply_factor_to_kpis(df: pd.DataFrame, factor: float) -> pd.DataFrame:
+    df = df.copy()
+    # Scale volume & money cols; keep rates steady
+    for col in ["sessions", "orders", "gross_revenue", "refunds", "net_revenue"]:
+        if col in df.columns:
+            if col in ["sessions", "orders"]:
+                df[col] = (df[col] * factor).round().astype(int)
+            else:
+                df[col] = df[col] * factor
+    return df
+
+kpis = apply_factor_to_kpis(kpis_base, factor)
+
+# Windows
 today = kpis["date"].max().date()
 last_30 = kpis[kpis["date"] >= (pd.Timestamp(today) - pd.Timedelta(days=30))]
 prev_30 = kpis[(kpis["date"] < (pd.Timestamp(today) - pd.Timedelta(days=30))) &
                (kpis["date"] >= (pd.Timestamp(today) - pd.Timedelta(days=60)))]
 
 # -----------------------------------------------------------------------------
-# Reusable Viz Helpers
+# Viz Helpers
 # -----------------------------------------------------------------------------
 def plot_line(df: pd.DataFrame, x: str, y: str, title: str, highlight=None):
     if PLOTLY_AVAILABLE:
@@ -337,10 +417,6 @@ def plot_scatter(df: pd.DataFrame, x: str, y: str, color: str, title: str, toolt
         st.write("Interactive scatter requires Plotly; falling back to table:")
         st.dataframe(df[[x, y, color] + (tooltip or [])])
 
-
-# -----------------------------------------------------------------------------
-# KPI Cards
-# -----------------------------------------------------------------------------
 def kpi_card(title: str, value, delta: float = None, delta_hint: str = "vs prev 30d"):
     st.markdown('<div class="kpi-card">', unsafe_allow_html=True)
     st.markdown(f'<div class="kpi-title">{title}</div>', unsafe_allow_html=True)
@@ -354,12 +430,10 @@ def kpi_card(title: str, value, delta: float = None, delta_hint: str = "vs prev 
         )
     st.markdown('</div>', unsafe_allow_html=True)
 
-
 # -----------------------------------------------------------------------------
-# Segmentation (robust percentile RFM to avoid qcut label mismatches)
+# RFM Segmentation
 # -----------------------------------------------------------------------------
 def quintile_score(series: pd.Series, reverse: bool = False) -> pd.Series:
-    """Map values to 1..5 quintile scores using percent ranks. reverse=True => smaller is better."""
     ranks = series.rank(method="first", pct=True)
     pct = (1 - ranks) if reverse else ranks
     scores = np.ceil(pct * 5).astype(int)
@@ -367,11 +441,10 @@ def quintile_score(series: pd.Series, reverse: bool = False) -> pd.Series:
 
 def rfm_segmentation(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
-    out["R"] = quintile_score(out["recency_days"], reverse=True)   # fewer days -> higher score
+    out["R"] = quintile_score(out["recency_days"], reverse=True)
     out["F"] = quintile_score(out["frequency"], reverse=False)
     out["M"] = quintile_score(out["monetary"], reverse=False)
     out["RFM_Score"] = out["R"]*100 + out["F"]*10 + out["M"]
-
     seg = []
     for _, row in out.iterrows():
         if row["R"] >= 4 and row["F"] >= 4 and row["M"] >= 4:
@@ -389,9 +462,8 @@ def rfm_segmentation(df: pd.DataFrame) -> pd.DataFrame:
     out["segment"] = seg
     return out
 
-
 # -----------------------------------------------------------------------------
-# Anomaly Detection (IQR on residuals)
+# Anomaly Detection
 # -----------------------------------------------------------------------------
 def iqr_anomalies(series: pd.Series, window:int=14, sensitivity: float=1.5):
     s = series.copy().astype(float)
@@ -402,19 +474,12 @@ def iqr_anomalies(series: pd.Series, window:int=14, sensitivity: float=1.5):
     iqr = (q3 - q1).fillna(0)
     lower = (q1 - sensitivity * iqr).fillna(-np.inf)
     upper = (q3 + sensitivity * iqr).fillna(np.inf)
-    anomalies = (resid < lower) | (resid > upper)
-    return anomalies.fillna(False)
-
+    return ((resid < lower) | (resid > upper)).fillna(False)
 
 # -----------------------------------------------------------------------------
-# Forecasting (Seasonal Naive + EMA with PI)
+# Forecasting
 # -----------------------------------------------------------------------------
 def seasonal_naive_forecast(df: pd.DataFrame, y: str, periods: int=30, season:int=7):
-    """
-    Forecast next 'periods' using seasonal naive (value = last season's same-period)
-    with a gentle EMA drift. Returns forecast df with PI (±1.96*residual_std).
-    df must have columns: ['date', y]
-    """
     hist = df.set_index("date")[y].astype(float)
     ema = hist.ewm(alpha=0.3).mean()
     resid = hist - ema
@@ -433,33 +498,24 @@ def seasonal_naive_forecast(df: pd.DataFrame, y: str, periods: int=30, season:in
         fc = base + (drift * ((i+1)/periods))
         fc_vals.append(fc)
 
-    forecast = pd.DataFrame({
-        "date": future_dates,
-        "forecast": fc_vals,
-    })
+    forecast = pd.DataFrame({"date": future_dates, "forecast": fc_vals})
     pi = 1.96 * resid_std
     forecast["pi_low"] = forecast["forecast"] - pi
     forecast["pi_high"] = forecast["forecast"] + pi
     return forecast
 
-
 # -----------------------------------------------------------------------------
 # Revenue Recovery Calculator
 # -----------------------------------------------------------------------------
 def revenue_recovery_opportunity(df_last_30: pd.DataFrame):
-    """
-    Estimate recoverable revenue with two levers:
-      - Reduce refund_rate by 1.0 percentage point
-      - Lift conversion_rate by 0.3 percentage point
-    """
     if len(df_last_30) == 0:
         return {"conv_uplift": 0.0, "refund_reduction": 0.0, "total": 0.0}
 
     sessions = float(df_last_30["sessions"].sum())
     cur_aov = safe_mean(df_last_30["aov"], 60.0)
 
-    delta_conv = 0.003   # +0.30pp
-    delta_refund = -0.010  # -1.0pp
+    delta_conv = 0.003    # +0.30pp
+    delta_refund = -0.010 # -1.0pp
 
     add_orders = sessions * delta_conv
     conv_uplift = add_orders * cur_aov
@@ -498,6 +554,28 @@ with col_right:
         """, unsafe_allow_html=True
     )
 
+# Visible filter controls synced with URL
+flt1, flt2 = st.columns([0.65, 0.35])
+with flt1:
+    st.markdown(
+        f"<div class='section-sub'>Filters active — "
+        f"<b>Region:</b> {', '.join(regions_selected)} · "
+        f"<b>Channel:</b> {', '.join(channels_selected)} "
+        f"(factor: {factor:.2f})</div>",
+        unsafe_allow_html=True
+    )
+with flt2:
+    with st.expander("Adjust Filters (sync to URL)"):
+        sel_regions = st.multiselect("Regions", ALL_REGIONS, default=regions_selected)
+        sel_channels = st.multiselect("Channels", ALL_CHANNELS, default=channels_selected)
+        if st.button("Apply Filters"):
+            # update URL with CSV params
+            set_query_params(
+                region=",".join(sel_regions) if sel_regions else ",".join(ALL_REGIONS),
+                channel=",".join(sel_channels) if sel_channels else ",".join(ALL_CHANNELS),
+            )
+            st.experimental_rerun()
+
 st.divider()
 
 
@@ -531,7 +609,6 @@ with tab_home:
         with c3:
             kpi_card("Avg Conversion Rate", fmt_pct(cur_conv), pct_delta(cur_conv, prev_conv))
         with c4:
-            # Invert delta (lower refund is better)
             kpi_card("Avg Refund Rate", fmt_pct(cur_ref), -pct_delta(cur_ref, prev_ref))
 
     opportunity = revenue_recovery_opportunity(last_30)
@@ -548,13 +625,13 @@ with tab_home:
         kpi_card("Refund Reduction", fmt_money(opportunity["refund_reduction"]))
     with c3:
         kpi_card("Total Recoverable (Est.)", fmt_money(opportunity["total"]))
-    st.caption("These are conservative, data-driven estimates grounded in your last 30 days.")
+    st.caption("These are conservative, data-driven estimates grounded in your last 30 days and the active filters.")
 
     st.markdown("<div class='section-title'>Revenue Over Time</div>", unsafe_allow_html=True)
     plot_line(kpis, "date", "net_revenue", "Net Revenue (Daily)")
 
-    with st.expander("Download demo data"):
-        download_button(kpis, "Download KPI Time Series (CSV)", "kpis_demo.csv")
+    with st.expander("Download demo data (filtered view affects revenue & volume only)"):
+        download_button(kpis, "Download KPI Time Series (CSV)", "kpis_demo_filtered.csv")
         download_button(customers, "Download Customers (CSV)", "customers_demo.csv")
 
     st.success("Tip: Jump to **Early Access** to join the waitlist and unlock pilot pricing.")
@@ -592,8 +669,8 @@ with tab_dash:
         bullets = [
             f"Net revenue {'increased' if trend_rev>=0 else 'decreased'} **{abs(trend_rev)*100:.1f}%** week-over-week.",
             f"Conversion rate {'improved' if trend_conv>=0 else 'declined'} **{abs(trend_conv)*100:.1f}%** vs prior week.",
-            f"Highest refund rate days: {', '.join([pd.to_datetime(d).strftime('%b %d') for d in top_refund_window['date']])}.",
-            f"Projected **{fmt_money(revenue_recovery_opportunity(last_30)['total'])}** recoverable with targeted plays (checkout friction & proactive refund interception).",
+            f"Highest refund-rate days: {', '.join([pd.to_datetime(d).strftime('%b %d') for d in top_refund_window['date']])}.",
+            f"Projected **{fmt_money(revenue_recovery_opportunity(last_30)['total'])}** recoverable with targeted plays.",
         ]
         st.markdown("\n".join([f"- {b}" for b in bullets]))
 
@@ -662,7 +739,6 @@ with tab_seg:
     else:
         st.bar_chart(seg_counts.set_index("segment"))
 
-    # Monetary vs Recency scatter
     sample_n = min(1500, len(seg_df))
     if sample_n > 0:
         plot_scatter(seg_df.sample(sample_n, random_state=7),
@@ -672,7 +748,7 @@ with tab_seg:
     with st.expander("Download Segmentation Data"):
         download_button(seg_df, "Download RFM Segmentation (CSV)", "rfm_segmentation.csv")
 
-    st.info("Playbook: Target 'At Risk' and 'Churn Risk' with win-back offers; upsell 'Champions' with VIP bundles.")
+    st.info("Playbook: Target 'At Risk' and 'Churn Risk' with win-back; upsell 'Champions' with VIP bundles.")
 
 
 # -----------------------------------------------------------------------------
@@ -829,6 +905,9 @@ with tab_wait:
                 "company_size": company_size,
                 "estimated_lost_revenue": est_lost,
                 "use_case": use_case.strip(),
+                # Optional: include active filters for GTM triage
+                "regions": ",".join(regions_selected),
+                "channels": ",".join(channels_selected),
             }
             ok_gf, msg_gf = submit_google_form(row)
             if ok_gf:
@@ -854,7 +933,9 @@ with tab_wait:
               "company": "entry.4444444",
               "company_size": "entry.5555555",
               "estimated_lost_revenue": "entry.6666666",
-              "use_case": "entry.7777777"
+              "use_case": "entry.7777777",
+              "regions": "entry.8888888",
+              "channels": "entry.9999999"
             }
         If not provided, submissions are safely stored to `waitlist.csv` in the app directory.
     """))
