@@ -1,6 +1,6 @@
-streamlit
 pandas
-plotly
+numpy
 scikit-learn
 statsmodels
+altair
 requests
