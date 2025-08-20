@@ -226,13 +226,17 @@ with st.sidebar:
         cat_filters[c] = sel
 
     st.divider()
-    st.subheader("Navigation")
-    nav = st.radio(
-        "Go to",
-        ["📊 Dashboard", "🧩 Segmentation", "🚨 Anomalies", "📈 Forecast", "🧠 AI Insights", "🕒 Early Access Waitlist"],
-        index=0,
-        key="nav",
-    )
+    st.subheader("Quick actions")
+    try:
+        csv_sidebar = df.to_csv(index=False).encode("utf-8")
+        st.download_button("Download filtered data (CSV)", csv_sidebar, file_name="data_filtered.csv", key="dl_filtered_sidebar")
+    except Exception:
+        pass
+
+    st.caption("Tip: Use the tabs at the top (Dashboard, Segmentation, Anomalies, Forecast, AI Insights, Waitlist).")
+
+    st.divider()
+    st.caption("Tip: Use the tabs at the top (Dashboard, Segmentation, Anomalies, Forecast, AI Insights, Waitlist).")
 
 # Apply filters
 if date_col and date_range is not None and len(date_range) == 2:
