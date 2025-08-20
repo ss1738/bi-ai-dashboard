@@ -5,6 +5,22 @@ from sklearn.cluster import KMeans
 from sklearn.ensemble import IsolationForest
 from statsmodels.tsa.arima.model import ARIMA
 
+# Optional: requests is used only if you enable auto-submit to Google Forms
+try:
+    import requests  # noqa: F401
+    HAS_REQUESTS = True
+except Exception:
+    HAS_REQUESTS = False
+
+# ====== CONFIGURE THESE (optional) ======
+# If you want emails to auto-save to Google Forms (no backend), set:
+#  - FORM_URL: "https://docs.google.com/forms/d/e/FORM_ID/formResponse"
+#  - ENTRY_ID: the entry.<digits> id of your Email field (find in browser devtools)
+FORM_URL = ""         # e.g., "https://docs.google.com/forms/d/e/1FAIpQLSf.../formResponse"
+ENTRY_ID = ""         # e.g., "entry.1234567890"
+WAITLIST_LINK = "https://forms.gle/YOUR_FORM_ID"  # fallback or preferred link
+# =======================================
+
 # ---------- Page config ----------
 st.set_page_config(page_title="📊 AI BI Dashboard", layout="wide")
 st.markdown("<a id='top'></a>", unsafe_allow_html=True)
@@ -35,13 +51,34 @@ def csv_template_bytes():
 # ---------- Sidebar: value capture, samples, filters ----------
 st.sidebar.header("📬 Stay in the loop")
 email = st.sidebar.text_input("Your email")
+
+def submit_email_to_form(email_val: str) -> bool:
+    """
+    Returns True if we posted successfully to Google Forms.
+    Requires FORM_URL and ENTRY_ID above + requests installed.
+    """
+    if not (FORM_URL and ENTRY_ID and HAS_REQUESTS):
+        return False
+    try:
+        resp = requests.post(FORM_URL, data={ENTRY_ID: email_val}, timeout=6)
+        # Google Forms returns 200 even without redirect
+        return resp.status_code in (200, 204)
+    except Exception:
+        return False
+
 if st.sidebar.button("Notify me"):
     if email.strip():
-        st.sidebar.success("Thanks! We’ll notify you about updates.")
-        # Tip: replace the link below with your Google Form / Tally / webhook
-        st.sidebar.markdown("[Join the waitlist](https://forms.gle/)" )
+        posted = submit_email_to_form(email.strip())
+        if posted:
+            st.sidebar.success("Thanks! You’re on the list ✅")
+        else:
+            st.sidebar.success("Thanks! Please join the waitlist to confirm.")
+            if WAITLIST_LINK:
+                st.sidebar.link_button("Join waitlist", WAITLIST_LINK)
     else:
         st.sidebar.warning("Please enter a valid email.")
+
+st.sidebar.caption("We’ll only use your email for product updates. Unsubscribe anytime.")
 
 st.sidebar.markdown("---")
 st.sidebar.header("📁 Load data")
@@ -84,7 +121,7 @@ if "date" in df.columns:
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
 for col in df.columns:
     if df[col].dtype == "object" and col not in ("category",):
-        # best-effort numeric conversion
+        # best-effort numeric conversion where possible
         df[col] = pd.to_numeric(df[col], errors="ignore")
 
 # Sidebar filters
@@ -108,6 +145,8 @@ if time_col and df_flt[time_col].notna().any():
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("[⬇️ Go to Download](#download-data)")
+if WAITLIST_LINK:
+    st.sidebar.link_button("Landing/Waitlist", WAITLIST_LINK)
 st.sidebar.markdown("🐞 Problems? [Email me](mailto:you@example.com)")
 
 # ---------- Tabs ----------
@@ -169,7 +208,7 @@ with tab2:
                     px.scatter(tmp, x="sales", y="profit", color="segment", title="Customer Segments"),
                     use_container_width=True
                 )
-                st.dataframe(tmp[[ "sales","profit","segment" ]].head(20), use_container_width=True)
+                st.dataframe(tmp[["sales","profit","segment"]].head(20), use_container_width=True)
             else:
                 st.info("Not enough rows after dropping NA to cluster.")
         except Exception as e:
