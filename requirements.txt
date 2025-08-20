@@ -6,3 +6,4 @@ altair
 requests
 altair_saver
 vl-convert-python
+XlsxWriter
