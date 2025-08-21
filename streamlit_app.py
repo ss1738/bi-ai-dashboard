@@ -50,9 +50,15 @@ def set_query_params(**kwargs):
     except Exception:
         st.experimental_set_query_params(**{k: v for k, v in kwargs.items() if v is not None})
 
-_qp = read_query_params()
-utm_source   = (_qp.get("utm_source", "") if isinstance(_qp, dict) else "") or ""
-utm_campaign = (_qp.get("utm_campaign", "") if isinstance(_qp, dict) else "") or ""
+# ---------- Capture UTM once (hidden) ----------
+if "utm" not in st.session_state:
+    _qp0 = read_query_params()
+    st.session_state.utm = {
+        "source": (_qp0.get("utm_source", "") if isinstance(_qp0, dict) else "") or "",
+        "campaign": (_qp0.get("utm_campaign", "") if isinstance(_qp0, dict) else "") or "",
+    }
+# Optional server log for debugging analytics:
+print("UTM captured:", st.session_state.utm)
 
 # ---------- Constants ----------
 DEFAULT_CHANNELS = ["Direct Sales", "Partner", "Online", "Retail", "Wholesale"]
@@ -132,19 +138,48 @@ def detect_anomalies(daily_df: pd.DataFrame) -> pd.DataFrame:
     dd["anomaly_score"] = iso.score_samples(feats)
     return dd[dd["anomaly"] == -1].copy()
 
-def make_forecast(daily_df: pd.DataFrame, days: int = 30) -> pd.DataFrame:
-    dd = daily_df.sort_values("date").copy()
-    dd["day_num"] = (dd["date"] - dd["date"].min()).dt.days
-    if dd["day_num"].nunique() < 2:
-        dd["type"] = "Historical"
-        return dd.rename(columns={"revenue":"value"})[["date","value","type"]]
-    X = dd[["day_num"]].values; y = dd["revenue"].values
-    model = LinearRegression().fit(X, y)
-    future_days = np.arange(dd["day_num"].max()+1, dd["day_num"].max()+days+1).reshape(-1,1)
-    pred = model.predict(future_days)
-    future_dates = pd.date_range(dd["date"].max()+timedelta(days=1), periods=days)
-    hist = dd[["date","revenue"]].rename(columns={"revenue":"value"}); hist["type"]="Historical"
-    fcst = pd.DataFrame({"date":future_dates, "value":pred, "type":"Forecast"})
+# ---- NEW: Ensemble forecast (trend + weekly seasonality) ----
+def make_forecast_ensemble(daily_df: pd.DataFrame, days: int = 30) -> pd.DataFrame:
+    """
+    Ensemble forecast that blends:
+    - Linear trend (captures growth/decline)
+    - Weekly seasonal naive (captures day-of-week effects)
+    Returns: columns [date, value, type ∈ {Historical, Forecast}]
+    """
+    if daily_df.empty:
+        return pd.DataFrame(columns=["date", "value", "type"])
+
+    # Ensure continuous daily series
+    s = (
+        daily_df.set_index("date")["revenue"]
+        .asfreq("D")
+        .fillna(method="ffill")
+    )
+    df = s.reset_index().rename(columns={"index": "date", "revenue": "revenue"})
+
+    # Linear trend
+    df["day_num"] = (df["date"] - df["date"].min()).dt.days
+    if df["day_num"].nunique() >= 2:
+        X = df[["day_num"]].values
+        y = df["revenue"].values
+        lr = LinearRegression().fit(X, y)
+        future_days = np.arange(df["day_num"].max() + 1, df["day_num"].max() + days + 1).reshape(-1, 1)
+        pred_trend = lr.predict(future_days)
+    else:
+        pred_trend = np.repeat(df["revenue"].iloc[-1], days)
+
+    # Weekly seasonal naive
+    dow_mean = df.groupby(df["date"].dt.weekday)["revenue"].mean()
+    future_dates = pd.date_range(df["date"].max() + timedelta(days=1), periods=days, freq="D")
+    pred_seasonal = np.array([dow_mean.get(d.weekday(), df["revenue"].mean()) for d in future_dates])
+
+    # Ensemble
+    pred_ens = (pred_trend + pred_seasonal) / 2.0
+    pred_ens = np.maximum(0.0, pred_ens)
+
+    # Pack output
+    hist = df[["date", "revenue"]].rename(columns={"revenue": "value"}); hist["type"] = "Historical"
+    fcst = pd.DataFrame({"date": future_dates, "value": pred_ens, "type": "Forecast"})
     return pd.concat([hist, fcst], ignore_index=True)
 
 def money(x): return f"${x:,.0f}"
@@ -216,10 +251,16 @@ by_channel["avg_deal_size"] = by_channel["revenue"] / by_channel["customers"].cl
 target_ads = float(by_channel["avg_deal_size"].quantile(0.75)) if not by_channel.empty else 0.0
 upsell_potential = float(((target_ads - by_channel["avg_deal_size"]).clip(lower=0) * by_channel["customers"]).sum()) if target_ads>0 else 0.0
 
-fc = make_forecast(daily, days=30)
-future  = fc[fc["type"]=="Forecast"]["value"].sum() if not fc.empty else 0.0
-last30  = daily.tail(30)["revenue"].sum() if len(daily)>=1 else 0.0
-forecast_uplift = float(max(0.0, future - last30))
+# ---- NEW: Forecast (ensemble) and uplift vs baseline ----
+fc = make_forecast_ensemble(daily, days=30)
+future_sum = float(fc[fc["type"] == "Forecast"]["value"].sum()) if not fc.empty else 0.0
+# Baseline: mean of last 30 days (or all if <30) * 30
+if len(daily) >= 7:
+    baseline_mean = float(daily["revenue"].tail(30).mean() if len(daily) >= 30 else daily["revenue"].mean())
+else:
+    baseline_mean = float(daily["revenue"].mean()) if not daily.empty else 0.0
+baseline_sum = baseline_mean * 30.0
+forecast_uplift = float(max(0.0, future_sum - baseline_sum))
 
 c1, c2, c3 = st.columns(3)
 with c1:
@@ -318,5 +359,5 @@ with st.form("waitlist"):
 
 # ---------- Footer / CTA ----------
 st.divider()
-st.caption(f"utm_source={utm_source}  utm_campaign={utm_campaign}")
+# Removed user-facing UTM caption; UTM is captured silently in session_state
 st.markdown("<div class='cta'><b>Want a private pilot?</b> — Upload your latest CSV and we’ll surface your top recovery moves in minutes.</div>", unsafe_allow_html=True)
