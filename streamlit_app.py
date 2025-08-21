@@ -35,10 +35,6 @@ def parse_query_params():
         return st.query_params  # Streamlit ≥ 1.32
     except Exception:
         return st.experimental_get_query_params()
-        utm_source = qp.get("utm_source", "")
-utm_campaign = qp.get("utm_campaign", "")
-# Use in st.caption somewhere:
-st.caption(f"utm_source={utm_source}  utm_campaign={utm_campaign}")
 
 def set_query_params(**kwargs):
     try:
@@ -50,6 +46,11 @@ def set_query_params(**kwargs):
                 qp[k] = v
     except Exception:
         st.experimental_set_query_params(**{k: v for k, v in kwargs.items() if v is not None})
+        utm_source = qp.get("utm_source", "")
+utm_campaign = qp.get("utm_campaign", "")
+# Use in st.caption somewhere:
+st.caption(f"utm_source={utm_source}  utm_campaign={utm_campaign}")
+
 
 def split_or_all(s, all_vals):
     vals = [x.strip() for x in s.split(",")] if isinstance(s, str) and s else []
