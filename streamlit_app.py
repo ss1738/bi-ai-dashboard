@@ -268,4 +268,17 @@ else:
     st.altair_chart(chart3, use_container_width=True)
 
 st.divider()
+st.divider()
+st.subheader("🚀 Join Early Access")
+
+with st.form("waitlist"):
+    name = st.text_input("Full name")
+    email = st.text_input("Work email")
+    use_case = st.text_input("What do you want to recover or optimize?")
+    submitted = st.form_submit_button("Request access")
+    if submitted:
+        if not name or not email:
+            st.error("Please add name and email.")
+        else:
+            st.success("Thanks! We’ll be in touch within 24 hours. ✅")
 st.markdown("<div class='cta'><b>Want a private pilot?</b> — Upload your latest CSV and we’ll surface your top recovery moves in minutes.</div>", unsafe_allow_html=True)
