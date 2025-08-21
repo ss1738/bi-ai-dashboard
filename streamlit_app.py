@@ -1,14 +1,26 @@
-# AI BI Dashboard - Complete Production App (Altair-only, Fixed)
+# Fix quoting issue by using triple single quotes for the outer string
+streamlit_app = r'''# Minimal AI Revenue Recovery Dashboard – Day 2 Demo
 # Save as: streamlit_app.py
 #
-# requirements.txt:
-# streamlit>=1.28.0
-# pandas>=2.0.0
-# numpy>=1.24.0
-# altair>=5.0.0
-# scikit-learn>=1.3.0
+# Features:
+# - CSV upload (or synthetic sample if none)
+# - URL query param filters (region, channel)
+# - Recovery cards (money-focused)
+# - Revenue trend with anomalies
+# - 30-day forecast
+# - Simple bar charts by channel/region
+#
+# Expected CSV columns (case-insensitive, flexible):
+# - date (or order_date)             -> parsed to datetime
+# - region                           -> string
+# - channel                          -> string
+# - segment (optional)               -> string
+# - product (optional)               -> string
+# - revenue OR (price * quantity)    -> numeric revenue in your currency
+# - customers (optional)             -> integer count; if missing, estimated
 #
 # Run locally:
+#   pip install -r requirements.txt
 #   streamlit run streamlit_app.py
 
 import streamlit as st
@@ -16,173 +28,319 @@ import pandas as pd
 import numpy as np
 import altair as alt
 from datetime import datetime, timedelta
-from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import IsolationForest
 from sklearn.linear_model import LinearRegression
-import warnings
 
-warnings.filterwarnings('ignore')
-alt.data_transformers.disable_max_rows()
+st.set_page_config(page_title="AI Revenue Recovery", page_icon="💰", layout="wide")
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 🎨 BRANDING & CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════════════════
-
-BRAND = {
-    "name": "AI Revenue Recovery Platform",
-    "tagline": "Recover $500K+ in lost revenue with AI-powered insights",
-    "primary_color": "#6366F1",
-    "secondary_color": "#EC4899",
-    "success_color": "#10B981",
-    "warning_color": "#F59E0B",
-    "dark_color": "#1F2937",
-    "light_color": "#F9FAFB",
-}
-
-st.set_page_config(
-    page_title="AI Revenue Recovery Platform",
-    page_icon="💰",
-    layout="wide",
-    initial_sidebar_state="collapsed",
+# ---------- Styling (simple, fast) ----------
+st.markdown(
+    """
+    <style>
+      .hero {padding:1.25rem 1.5rem;border-radius:16px;
+              background:linear-gradient(135deg,#6366F1,#EC4899);color:white;}
+      .card {background:white;border-radius:12px;padding:1rem;box-shadow:0 2px 12px rgba(0,0,0,.06);}
+      .kpi {font-size:1.8rem;font-weight:800;margin:0;}
+      .kpi-sub {opacity:.8;margin-top:.25rem;}
+      .cta {padding:1rem;border-radius:12px;background:#111827;color:#fff;}
+    </style>
+    """,
+    unsafe_allow_html=True
 )
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 🎯 CSS STYLING
-# ═══════════════════════════════════════════════════════════════════════════════
+# ---------- Constants ----------
+DEFAULT_SEGMENTS = ["Enterprise", "Mid-Market", "SMB", "Startup"]
+DEFAULT_CHANNELS = ["Direct Sales", "Partner", "Online", "Retail", "Wholesale"]
+DEFAULT_REGIONS  = ["AMER", "EMEA", "APAC"]
 
-def load_css():
-    st.markdown(f"""
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-    :root {{
-        --primary: {BRAND['primary_color']};
-        --secondary: {BRAND['secondary_color']};
-        --success: {BRAND['success_color']};
-        --warning: {BRAND['warning_color']};
-        --dark: {BRAND['dark_color']};
-        --light: {BRAND['light_color']};
-    }}
-    #MainMenu {{visibility: hidden;}}
-    .stDeployButton {{display:none;}}
-    footer {{visibility: hidden;}}
-    .stApp > header {{visibility: hidden;}}
-    .stApp {{background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); font-family: 'Inter', sans-serif;}}
-    </style>
-    """, unsafe_allow_html=True)
+# ---------- Helpers ----------
+def parse_query_params():
+    """Return dict-like query params with safe fallback for older Streamlit."""
+    try:
+        return st.query_params  # Streamlit 1.32+
+    except Exception:
+        return st.experimental_get_query_params()
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 📊 DATA GENERATION
-# ═══════════════════════════════════════════════════════════════════════════════
+def set_query_params(**kwargs):
+    """Set query params, safe for older Streamlit."""
+    try:
+        qp = st.query_params
+        for k, v in kwargs.items():
+            if v is None:
+                if k in qp: del qp[k]
+            else:
+                qp[k] = v
+    except Exception:
+        st.experimental_set_query_params(**{k: v for k, v in kwargs.items() if v is not None})
+
+def split_or_all(s, all_vals):
+    vals = [x.strip() for x in s.split(",")] if isinstance(s, str) and s else []
+    vals = [v for v in vals if v in all_vals]
+    return vals or all_vals
 
 @st.cache_data
-def generate_business_data(seed: int = 42) -> pd.DataFrame:
+def make_sample_data(seed=17, days=120):
     np.random.seed(seed)
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=730)
-    dates = pd.date_range(start_date, end_date, freq="D")
-
-    segments = ["Enterprise", "Mid-Market", "SMB", "Startup"]
-    channels = ["Direct Sales", "Partner", "Online", "Retail"]
-    regions = ["North America", "Europe", "Asia Pacific", "Latin America"]
-    products = ["Platform Pro", "Analytics Suite", "AI Insights", "Basic Plan"]
-
+    end = datetime.now()
+    dates = pd.date_range(end - timedelta(days=days-1), end, freq="D")
     rows = []
-    for date in dates:
-        seasonal_mult = 1.2 if date.month in (11, 12) else (0.8 if date.month in (7, 8) else 1.0)
-        weekly_mult = 0.7 if date.weekday() >= 5 else 1.0
-        for segment in segments:
-            base_revenue = {"Enterprise": 50000, "Mid-Market": 15000, "SMB": 5000, "Startup": 1500}[segment]
-            for channel in channels:
-                channel_mult = {"Direct Sales": 1.3, "Partner": 1.1, "Online": 0.9, "Retail": 0.8}[channel]
-                for region in regions:
-                    region_mult = {"North America": 1.2, "Europe": 1.0, "Asia Pacific": 0.9, "Latin America": 0.7}[region]
-                    revenue = base_revenue * seasonal_mult * weekly_mult * channel_mult * region_mult * np.random.normal(1, 0.15)
-                    revenue = max(0, revenue)
-                    customers = max(1, int(np.random.poisson(revenue / (base_revenue / 10))))
-                    avg_deal_size = revenue / customers if customers else 0
-                    churn_rate = np.random.uniform(0.02, 0.08)
-                    if np.random.random() < 0.05:
-                        revenue *= 0.3
-                    rows.append({
-                        "date": date,
-                        "segment": segment,
-                        "channel": channel,
-                        "region": region,
-                        "product": np.random.choice(products),
-                        "revenue": float(revenue),
-                        "customers": int(customers),
-                        "avg_deal_size": float(avg_deal_size),
-                        "churn_rate": float(churn_rate),
-                        "cost_of_acquisition": float(revenue * np.random.uniform(0.15, 0.35)),
-                        "lifetime_value": float(revenue * np.random.uniform(2, 6)),
-                    })
+    for d in dates:
+        week_mult = 0.7 if d.weekday() >= 5 else 1.0
+        for ch in DEFAULT_CHANNELS:
+            for rg in DEFAULT_REGIONS:
+                base = {"Direct Sales":1.25,"Partner":1.1,"Online":1.0,"Retail":0.9,"Wholesale":0.85}[ch]
+                regm = {"AMER":1.15,"EMEA":1.0,"APAC":0.95}[rg]
+                segment = np.random.choice(DEFAULT_SEGMENTS, p=[0.25,0.3,0.3,0.15])
+                product = np.random.choice(["Platform Pro","Analytics Suite","AI Insights","Basic"])
+                revenue = 20000 * week_mult * base * regm * np.random.normal(1, 0.18)
+                revenue = max(0, revenue)
+                customers = max(1, int(np.random.poisson(lam=max(1, revenue/1800))))
+                rows.append({
+                    "date": d,
+                    "region": rg,
+                    "channel": ch,
+                    "segment": segment,
+                    "product": product,
+                    "revenue": float(revenue),
+                    "customers": int(customers),
+                })
     return pd.DataFrame(rows)
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 🧠 AI/ML FUNCTIONS
-# ═══════════════════════════════════════════════════════════════════════════════
+def coerce_numeric(s):
+    s = pd.to_numeric(s, errors="coerce")
+    return s
 
-def perform_segmentation(df: pd.DataFrame) -> pd.DataFrame:
-    segment_data = df.groupby("segment").agg({
-        "revenue": "sum", "customers": "sum",
-        "avg_deal_size": "mean", "churn_rate": "mean", "lifetime_value": "mean"
-    }).reset_index()
-    features = ["revenue", "customers", "avg_deal_size", "lifetime_value"]
-    X = StandardScaler().fit_transform(segment_data[features])
-    kmeans = KMeans(n_clusters=3, n_init=10, random_state=42)
-    segment_data["cluster"] = kmeans.fit_predict(X)
-    labels = {0: "High Value", 1: "Growing", 2: "Opportunity"}
-    segment_data["cluster_name"] = segment_data["cluster"].map(labels)
-    return segment_data
+def load_csv(file) -> pd.DataFrame:
+    """Load user CSV with flexible schema -> normalized DataFrame."""
+    df = pd.read_csv(file)
+    # Normalize columns
+    cols = {c.lower().strip(): c for c in df.columns}
+    # Date
+    date_col = None
+    for cand in ["date","order_date","created_at","day"]:
+        if cand in cols:
+            date_col = cols[cand]; break
+    if date_col is None:
+        raise ValueError("CSV must include a 'date' column (or 'order_date').")
+    df["date"] = pd.to_datetime(df[date_col], errors="coerce")
+    # Region
+    if "region" in cols:
+        df["region"] = df[cols["region"]].astype(str)
+    else:
+        df["region"] = "Unknown"
+    # Channel
+    if "channel" in cols:
+        df["channel"] = df[cols["channel"]].astype(str)
+    else:
+        df["channel"] = "Unknown"
+    # Segment (optional)
+    df["segment"] = df[cols["segment"]].astype(str) if "segment" in cols else "All"
+    # Product (optional)
+    df["product"] = df[cols["product"]].astype(str) if "product" in cols else "All"
+    # Revenue
+    if "revenue" in cols:
+        df["revenue"] = coerce_numeric(df[cols["revenue"]])
+    else:
+        # try price * quantity
+        if "price" in cols and "quantity" in cols:
+            df["revenue"] = coerce_numeric(df[cols["price"]]) * coerce_numeric(df[cols["quantity"]])
+        else:
+            raise ValueError("CSV must include 'revenue' or 'price' and 'quantity'.")
+    # Customers (optional)
+    if "customers" in cols:
+        df["customers"] = coerce_numeric(df[cols["customers"]]).fillna(1).astype(int)
+    else:
+        # estimate from revenue scale
+        df["customers"] = np.maximum(1, (df["revenue"] / np.maximum(1.0, df["revenue"].median()/5)).round()).astype(int)
+    # Clean
+    df = df.dropna(subset=["date","revenue"]).copy()
+    df["revenue"] = df["revenue"].clip(lower=0.0)
+    return df[["date","region","channel","segment","product","revenue","customers"]]
 
-def detect_anomalies(df: pd.DataFrame) -> pd.DataFrame:
-    daily = df.groupby("date", as_index=False)["revenue"].sum()
-    daily["day_of_week"] = daily["date"].dt.dayofweek
-    daily["month"] = daily["date"].dt.month
-    daily["revenue_lag1"] = daily["revenue"].shift(1)
-    daily["revenue_lag7"] = daily["revenue"].shift(7)
-    daily = daily.dropna()
-    feats = ["revenue", "day_of_week", "month", "revenue_lag1", "revenue_lag7"]
+def detect_anomalies(daily_df: pd.DataFrame) -> pd.DataFrame:
+    dd = daily_df.sort_values("date").copy()
+    dd["day_of_week"] = dd["date"].dt.dayofweek
+    dd["month"] = dd["date"].dt.month
+    dd["revenue_lag1"] = dd["revenue"].shift(1)
+    dd["revenue_lag7"] = dd["revenue"].shift(7)
+    dd = dd.dropna()
+    if dd.empty:
+        return dd.assign(anomaly=[], anomaly_score=[])
+    feats = dd[["revenue","day_of_week","month","revenue_lag1","revenue_lag7"]].values
     iso = IsolationForest(contamination=0.1, random_state=42)
-    daily["anomaly"] = iso.fit_predict(daily[feats])
-    daily["anomaly_score"] = iso.score_samples(daily[feats])
-    anomalies = daily[daily["anomaly"] == -1].copy()
-    anomalies["potential_loss"] = anomalies["revenue"] * 0.3
-    return anomalies
+    dd["anomaly"] = iso.fit_predict(feats)
+    dd["anomaly_score"] = iso.score_samples(feats)
+    return dd[dd["anomaly"] == -1].copy()
 
-def generate_forecast(df: pd.DataFrame, days: int = 30) -> pd.DataFrame:
-    daily = df.groupby("date", as_index=False)["revenue"].sum()
-    daily["day_num"] = (daily["date"] - daily["date"].min()).dt.days
-    X = daily[["day_num"]].values; y = daily["revenue"].values
+def make_forecast(daily_df: pd.DataFrame, days: int = 30) -> pd.DataFrame:
+    dd = daily_df.sort_values("date").copy()
+    dd["day_num"] = (dd["date"] - dd["date"].min()).dt.days
+    if dd["day_num"].nunique() < 2:
+        dd["type"] = "Historical"
+        return dd.rename(columns={"revenue":"value"})[["date","value","type"]]
+    X = dd[["day_num"]].values
+    y = dd["revenue"].values
     model = LinearRegression().fit(X, y)
-    future_days = np.arange(daily["day_num"].max()+1, daily["day_num"].max()+days+1).reshape(-1, 1)
-    forecast = model.predict(future_days)
-    future_dates = pd.date_range(daily["date"].max() + timedelta(days=1), periods=days)
-    forecast_df = pd.DataFrame({"date": future_dates, "value": forecast, "type": "Forecast"})
-    hist_df = daily[["date", "revenue"]].rename(columns={"revenue": "value"}); hist_df["type"] = "Historical"
-    return pd.concat([hist_df, forecast_df])
+    last = int(dd["day_num"].max())
+    future = np.arange(last+1, last+days+1).reshape(-1,1)
+    pred = model.predict(future)
+    future_dates = pd.date_range(dd["date"].max()+timedelta(days=1), periods=days)
+    hist = dd[["date","revenue"]].rename(columns={"revenue":"value"}); hist["type"]="Historical"
+    fcst = pd.DataFrame({"date":future_dates, "value":pred, "type":"Forecast"})
+    return pd.concat([hist, fcst], ignore_index=True)
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 🧭 APP ENTRY
-# ═══════════════════════════════════════════════════════════════════════════════
+def money(x): return f"${x:,.0f}"
 
-def main():
-    load_css()
-    data = generate_business_data()
-    st.title("💰 AI Revenue Recovery Platform")
-    st.subheader(BRAND["tagline"])
-    page = st.sidebar.radio("Navigation", ["Home","Dashboard","Segmentation","Anomaly Detection","Forecasting"])
-    if page=="Home":
-        st.write("Welcome! Use the sidebar to explore dashboards.")
-    elif page=="Dashboard":
-        st.write("📊 Dashboard coming soon.")
-    elif page=="Segmentation":
-        st.dataframe(perform_segmentation(data))
-    elif page=="Anomaly Detection":
-        st.dataframe(detect_anomalies(data))
-    elif page=="Forecasting":
-        st.dataframe(generate_forecast(data, days=30))
+# ---------- Data Input ----------
+st.markdown('<div class="hero"><h2 style="margin:0;">💰 Recover $500K in Lost Revenue</h2><p style="margin:.2rem 0 0 0;">AI-powered insights for faster growth and fewer leaks.</p></div>', unsafe_allow_html=True)
 
-if __name__ == "__main__":
-    main()
+with st.expander("Upload your CSV (or use sample data)"):
+    up = st.file_uploader("CSV with columns like: date, region, channel, revenue, customers…", type=["csv"])
+    if st.button("Download sample CSV"):
+        sample = make_sample_data().to_csv(index=False)
+        st.download_button("Save sample.csv", sample, file_name="sample_revenue_data.csv", mime="text/csv")
+
+# Load data
+if up is not None:
+    try:
+        df = load_csv(up)
+        st.success("Data loaded from your CSV ✅")
+    except Exception as e:
+        st.error(f"CSV error: {e}")
+        df = make_sample_data()
+        st.info("Using sample data instead.")
+else:
+    df = make_sample_data()
+    st.info("Using sample data. Upload your CSV to analyze your own revenue.")
+
+# ---------- Query Params & Filters ----------
+qp = parse_query_params()
+regions_q = ""
+channels_q = ""
+try:
+    regions_q = qp.get("region", "")
+    channels_q = qp.get("channel", "")
+    if isinstance(regions_q, list): regions_q = regions_q[0] if regions_q else ""
+    if isinstance(channels_q, list): channels_q = channels_q[0] if channels_q else ""
+except Exception:
+    pass
+
+all_regions = sorted(df["region"].dropna().unique().tolist())
+all_channels = sorted(df["channel"].dropna().unique().tolist())
+
+sel_regions  = split_or_all(regions_q, all_regions or DEFAULT_REGIONS)
+sel_channels = split_or_all(channels_q, all_channels or DEFAULT_CHANNELS)
+
+st.sidebar.header("Filters")
+regions_sel  = st.sidebar.multiselect("Region", all_regions, default=sel_regions)
+channels_sel = st.sidebar.multiselect("Channel", all_channels, default=sel_channels)
+
+set_query_params(region=",".join(regions_sel) if regions_sel else None,
+                 channel=",".join(channels_sel) if channels_sel else None)
+
+df_f = df[df["region"].isin(regions_sel) & df["channel"].isin(channels_sel)].copy()
+if df_f.empty:
+    st.warning("No data for the selected filters. Showing all data.")
+    df_f = df.copy()
+
+# ---------- KPIs & Recovery Cards ----------
+daily = df_f.groupby("date", as_index=False)["revenue"].sum()
+total_rev = float(daily["revenue"].sum())
+avg_day_rev = float(daily["revenue"].mean()) if not daily.empty else 0.0
+anoms = detect_anomalies(daily)
+potential_loss = float(max(0.0, (avg_day_rev * len(anoms) - anoms["revenue"].sum()) if not anoms.empty else 0.0))
+
+# Upsell potential: lift underperforming channels to 75th percentile avg revenue/day
+# pandas groupby API compatibility
+by_channel = df_f.groupby("channel", as_index=False).agg(revenue=("revenue","sum"), customers=("customers","sum"))
+by_channel["avg_deal_size"] = by_channel["revenue"] / by_channel["customers"].clip(lower=1)
+target_ads = float(by_channel["avg_deal_size"].quantile(0.75)) if not by_channel.empty else 0.0
+upsell_potential = float(((target_ads - by_channel["avg_deal_size"]).clip(lower=0) * by_channel["customers"]).sum()) if target_ads>0 else 0.0
+
+# Forecast uplift: next 30 days vs last 30-day average
+fc = make_forecast(daily, days=30)
+future = fc[fc["type"]=="Forecast"]["value"].sum() if not fc.empty else 0.0
+last30 = daily.tail(30)["revenue"].sum() if len(daily)>=1 else 0.0
+forecast_uplift = float(max(0.0, future - last30))
+
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown(f"<div class='kpi'>{money(potential_loss)}</div><div class='kpi-sub'>Recoverable (Anomalies)</div>", unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+with col2:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown(f"<div class='kpi'>{money(upsell_potential)}</div><div class='kpi-sub'>Upsell Potential</div>", unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+with col3:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown(f"<div class='kpi'>{money(forecast_uplift)}</div><div class='kpi-sub'>30-day Forecast Uplift</div>", unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+st.divider()
+
+# ---------- Charts ----------
+if df_f.empty:
+    st.info("No data to visualize.")
+else:
+    c1, c2 = st.columns([2,1])
+    with c1:
+        st.subheader("Revenue Trend & Anomalies")
+        base = alt.Chart(daily).encode(x=alt.X("date:T", title="Date"))
+        line = base.mark_line().encode(y=alt.Y("revenue:Q", title="Revenue ($)", axis=alt.Axis(format="~s")))
+        if not anoms.empty:
+            pts = alt.Chart(anoms).mark_point(size=80, filled=True, color="#EF4444").encode(
+                x="date:T", y="revenue:Q",
+                tooltip=["date:T", alt.Tooltip("revenue:Q", format=",.0f")]
+            )
+            st.altair_chart((line + pts).properties(height=340), use_container_width=True)
+        else:
+            st.altair_chart(line.properties(height=340), use_container_width=True)
+
+    with c2:
+        st.subheader("Revenue by Channel")
+        by_ch = df_f.groupby("channel", as_index=False)["revenue"].sum().sort_values("revenue", ascending=False)
+        chart = alt.Chart(by_ch).mark_bar().encode(
+            x=alt.X("revenue:Q", title="Revenue ($)", axis=alt.Axis(format="~s")),
+            y=alt.Y("channel:N", sort="-x"),
+            tooltip=["channel:N", alt.Tooltip("revenue:Q", format=",.0f")]
+        ).properties(height=340)
+        st.altair_chart(chart, use_container_width=True)
+
+    st.subheader("Revenue by Region")
+    by_rg = df_f.groupby("region", as_index=False)["revenue"].sum().sort_values("revenue", ascending=False)
+    chart2 = alt.Chart(by_rg).mark_bar().encode(
+        x=alt.X("region:N", title="Region"),
+        y=alt.Y("revenue:Q", title="Revenue ($)", axis=alt.Axis(format="~s")),
+        tooltip=["region:N", alt.Tooltip("revenue:Q", format=",.0f")]
+    ).properties(height=300)
+    st.altair_chart(chart2, use_container_width=True)
+
+    st.subheader("30-Day Revenue Forecast")
+    chart3 = alt.Chart(fc).mark_line(point=True).encode(
+        x=alt.X("date:T", title="Date"),
+        y=alt.Y("value:Q", title="Revenue ($)", axis=alt.Axis(format="~s")),
+        color="type:N",
+        tooltip=["type:N","date:T",alt.Tooltip("value:Q", format=",.0f")]
+    ).properties(height=360)
+    st.altair_chart(chart3, use_container_width=True)
+
+# ---------- CTA ----------
+st.divider()
+st.markdown("<div class='cta'><b>Want a private pilot?</b> — Upload your latest CSV and we’ll surface your top recovery moves in minutes.</div>", unsafe_allow_html=True)
+'''
+
+requirements = """streamlit>=1.33.0
+pandas>=2.0.0
+numpy>=1.24.0
+altair>=5.0.0
+scikit-learn>=1.3.0
+"""
+
+with open('/mnt/data/streamlit_app.py', 'w', encoding='utf-8') as f:
+    f.write(streamlit_app)
+
+with open('/mnt/data/requirements.txt', 'w', encoding='utf-8') as f:
+    f.write(requirements)
+
+print("✅ Files written:\n- /mnt/data/streamlit_app.py\n- /mnt/data/requirements.txt")
