@@ -221,6 +221,29 @@ with c3:
     st.markdown('</div>', unsafe_allow_html=True)
 
 st.divider()
+st.subheader("💡 Top 3 Recovery Moves")
+moves = []
+
+# 1) Plug anomaly losses
+if potential_loss > 0:
+    moves.append(f"Plug anomaly days → recover about {money(potential_loss)} (alert ops; investigate pricing/promos, payment errors).")
+
+# 2) Lift underperforming channels
+if upsell_potential > 0:
+    worst = by_channel.sort_values("avg_deal_size").head(1)
+    if not worst.empty:
+        wc = worst["channel"].iloc[0]
+        moves.append(f"Raise {wc} avg deal size to 75th-pct → unlock ~{money(upsell_potential)} (bundles, add-ons, min pricing).")
+
+# 3) Capture forecast uplift
+if forecast_uplift > 0:
+    moves.append(f"Prepare capacity and promos for next 30 days → capture projected uplift of ~{money(forecast_uplift)}.")
+
+if not moves:
+    moves = ["Data looks healthy. Focus on targeted upsell and retention campaigns."]
+
+for i, m in enumerate(moves, 1):
+    st.markdown(f"- **{i}. {m}**")
 
 # ---------- Charts ----------
 if df_f.empty:
