@@ -1,4 +1,4 @@
-# Minimal AI Revenue Recovery Dashboard – Day 2 Demo
+# AI Revenue Recovery – Minimal Demo (final)
 # Run: streamlit run streamlit_app.py
 
 import streamlit as st
@@ -16,23 +16,20 @@ st.markdown(
     """
     <style>
       .hero {padding:1.25rem 1.5rem;border-radius:16px;
-              background:linear-gradient(135deg,#6366F1,#EC4899);color:white;}
+             background:linear-gradient(135deg,#6366F1,#EC4899);color:white;}
       .card {background:white;border-radius:12px;padding:1rem;box-shadow:0 2px 12px rgba(0,0,0,.06);}
-      .kpi {font-size:1.8rem;font-weight:800;margin:0;}
+      .kpi  {font-size:1.8rem;font-weight:800;margin:0;}
       .kpi-sub {opacity:.8;margin-top:.25rem;}
-      .cta {padding:1rem;border-radius:12px;background:#111827;color:#fff;}
+      .cta  {padding:1rem;border-radius:12px;background:#111827;color:#fff;}
     </style>
     """,
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
 
-DEFAULT_CHANNELS = ["Direct Sales", "Partner", "Online", "Retail", "Wholesale"]
-DEFAULT_REGIONS  = ["AMER", "EMEA", "APAC"]
-DEFAULT_SEGMENTS = ["Enterprise", "Mid-Market", "SMB", "Startup"]
-
-def parse_query_params():
+# ---------- Query params helpers (new + old Streamlit) ----------
+def read_query_params():
     try:
-        return st.query_params  # Streamlit ≥ 1.32
+        return st.query_params  # Streamlit >= 1.32
     except Exception:
         return st.experimental_get_query_params()
 
@@ -46,19 +43,19 @@ def set_query_params(**kwargs):
                 qp[k] = v
     except Exception:
         st.experimental_set_query_params(**{k: v for k, v in kwargs.items() if v is not None})
-        utm_source = qp.get("utm_source", "")
-utm_campaign = qp.get("utm_campaign", "")
-# Use in st.caption somewhere:
-st.caption(f"utm_source={utm_source}  utm_campaign={utm_campaign}")
 
+# Read once at top so UTM etc always exist
+_qp = read_query_params()
+utm_source   = (_qp.get("utm_source", "") if isinstance(_qp, dict) else "") or ""
+utm_campaign = (_qp.get("utm_campaign", "") if isinstance(_qp, dict) else "") or ""
 
-def split_or_all(s, all_vals):
-    vals = [x.strip() for x in s.split(",")] if isinstance(s, str) and s else []
-    vals = [v for v in vals if v in all_vals]
-    return vals or all_vals
+# ---------- Constants ----------
+DEFAULT_CHANNELS = ["Direct Sales", "Partner", "Online", "Retail", "Wholesale"]
+DEFAULT_REGIONS  = ["AMER", "EMEA", "APAC"]
+DEFAULT_SEGMENTS = ["Enterprise", "Mid-Market", "SMB", "Startup"]
 
 @st.cache_data
-def make_sample_data(seed=17, days=120):
+def make_sample_data(seed=17, days=120) -> pd.DataFrame:
     np.random.seed(seed)
     end = datetime.now()
     dates = pd.date_range(end - timedelta(days=days-1), end, freq="D")
@@ -92,7 +89,7 @@ def load_csv(file) -> pd.DataFrame:
     else:
         raise ValueError("CSV must include a 'date' (or 'order_date') column.")
     # region/channel
-    df["region"] = df[cols["region"]].astype(str) if "region" in cols else "Unknown"
+    df["region"]  = df[cols["region"]].astype(str)  if "region"  in cols else "Unknown"
     df["channel"] = df[cols["channel"]].astype(str) if "channel" in cols else "Unknown"
     # optional
     df["segment"] = df[cols["segment"]].astype(str) if "segment" in cols else "All"
@@ -104,7 +101,7 @@ def load_csv(file) -> pd.DataFrame:
         df["revenue"] = coerce_numeric(df[cols["price"]]) * coerce_numeric(df[cols["quantity"]])
     else:
         raise ValueError("CSV must include 'revenue' or 'price' and 'quantity'.")
-    # customers (optional)
+    # customers
     if "customers" in cols:
         df["customers"] = coerce_numeric(df[cols["customers"]]).fillna(1).astype(int)
     else:
@@ -146,18 +143,18 @@ def money(x): return f"${x:,.0f}"
 
 # ---------- Hero ----------
 st.markdown(
-    '<div class="hero"><h2 style="margin:0;">💰 Recover $500K in Lost Revenue</h2>'
+    '<div class="hero" id="recover-500-k-in-lost-revenue-with-ai-powered-insights">'
+    '<h2 style="margin:0;">💰 Recover $500K in Lost Revenue</h2>'
     '<p style="margin:.2rem 0 0 0;">AI-powered insights for faster growth and fewer leaks.</p></div>',
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
 
 # ---------- Upload ----------
 with st.expander("Upload your CSV (or use sample data)"):
     up = st.file_uploader("CSV with columns like: date, region, channel, revenue, customers…", type=["csv"])
-    sample_btn = st.button("Download sample CSV")
-    if sample_btn:
-        sample = make_sample_data().to_csv(index=False)
-        st.download_button("Save sample.csv", sample, file_name="sample_revenue_data.csv", mime="text/csv")
+    if st.button("Download sample CSV"):
+        st.download_button("Save sample.csv", make_sample_data().to_csv(index=False),
+                           file_name="sample_revenue_data.csv", mime="text/csv")
 
 # Load data
 if up is not None:
@@ -166,21 +163,24 @@ if up is not None:
         st.success("Data loaded from your CSV ✅")
     except Exception as e:
         st.error(f"CSV error: {e}")
-        df = make_sample_data()
-        st.info("Using sample data instead.")
+        df = make_sample_data(); st.info("Using sample data instead.")
 else:
-    df = make_sample_data()
-    st.info("Using sample data. Upload your CSV to analyze your own revenue.")
+    df = make_sample_data(); st.info("Using sample data. Upload your CSV to analyze your own revenue.")
 
 # ---------- Filters with URL sync ----------
-qp = parse_query_params()
-regions_q = qp.get("region", "")
-channels_q = qp.get("channel", "")
-if isinstance(regions_q, list): regions_q = regions_q[0] if regions_q else ""
+qp = read_query_params()
+regions_q = qp.get("region", ""); channels_q = qp.get("channel", "")
+if isinstance(regions_q, list):  regions_q  = regions_q[0] if regions_q else ""
 if isinstance(channels_q, list): channels_q = channels_q[0] if channels_q else ""
 
 all_regions  = sorted(df["region"].dropna().unique().tolist())
 all_channels = sorted(df["channel"].dropna().unique().tolist())
+
+def split_or_all(s, all_vals):
+    vals = [x.strip() for x in s.split(",")] if isinstance(s, str) and s else []
+    vals = [v for v in vals if v in all_vals]
+    return vals or all_vals
+
 sel_regions  = split_or_all(regions_q,  all_regions or DEFAULT_REGIONS)
 sel_channels = split_or_all(channels_q, all_channels or DEFAULT_CHANNELS)
 
@@ -192,8 +192,7 @@ set_query_params(region=",".join(regions_sel) if regions_sel else None,
 
 df_f = df[df["region"].isin(regions_sel) & df["channel"].isin(channels_sel)].copy()
 if df_f.empty:
-    st.warning("No data for the selected filters. Showing all data.")
-    df_f = df.copy()
+    st.warning("No data for the selected filters. Showing all data."); df_f = df.copy()
 
 # ---------- KPIs ----------
 daily = df_f.groupby("date", as_index=False)["revenue"].sum()
@@ -225,30 +224,23 @@ with c3:
     st.markdown(f"<div class='kpi'>{money(forecast_uplift)}</div><div class='kpi-sub'>30-day Forecast Uplift</div>", unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-st.divider()
+# ---------- Top 3 Recovery Moves ----------
 st.subheader("💡 Top 3 Recovery Moves")
 moves = []
-
-# 1) Plug anomaly losses
 if potential_loss > 0:
-    moves.append(f"Plug anomaly days → recover about {money(potential_loss)} (alert ops; investigate pricing/promos, payment errors).")
-
-# 2) Lift underperforming channels
+    moves.append(f"Plug anomaly days → recover about {money(potential_loss)} (check pricing/promos, billing, ops).")
 if upsell_potential > 0:
-    worst = by_channel.sort_values("avg_deal_size").head(1)
+    worst = by_channel.nsmallest(1, "avg_deal_size")
     if not worst.empty:
-        wc = worst["channel"].iloc[0]
-        moves.append(f"Raise {wc} avg deal size to 75th-pct → unlock ~{money(upsell_potential)} (bundles, add-ons, min pricing).")
-
-# 3) Capture forecast uplift
+        moves.append(f"Lift {worst['channel'].iloc[0]} deal size to 75th-pct → unlock ~{money(upsell_potential)} (bundles/add-ons).")
 if forecast_uplift > 0:
-    moves.append(f"Prepare capacity and promos for next 30 days → capture projected uplift of ~{money(forecast_uplift)}.")
-
+    moves.append(f"Prep capacity & promos for next 30 days → capture ~{money(forecast_uplift)} uplift.")
 if not moves:
-    moves = ["Data looks healthy. Focus on targeted upsell and retention campaigns."]
-
+    moves = ["Data looks healthy—focus on targeted retention & upsell."]
 for i, m in enumerate(moves, 1):
     st.markdown(f"- **{i}. {m}**")
+
+st.divider()
 
 # ---------- Charts ----------
 if df_f.empty:
@@ -295,18 +287,22 @@ else:
     ).properties(height=360)
     st.altair_chart(chart3, use_container_width=True)
 
-st.divider()
+# ---------- Waitlist ----------
 st.divider()
 st.subheader("🚀 Join Early Access")
-
 with st.form("waitlist"):
-    name = st.text_input("Full name")
-    email = st.text_input("Work email")
+    c1, c2 = st.columns(2)
+    with c1: name  = st.text_input("Full name")
+    with c2: email = st.text_input("Work email")
     use_case = st.text_input("What do you want to recover or optimize?")
     submitted = st.form_submit_button("Request access")
     if submitted:
         if not name or not email:
             st.error("Please add name and email.")
         else:
-            st.success("Thanks! We’ll be in touch within 24 hours. ✅")
+            st.success("Thanks! We’ll be in touch. ✅")
+
+# ---------- Footer / CTA ----------
+st.divider()
+st.caption(f"utm_source={utm_source}  utm_campaign={utm_campaign}")
 st.markdown("<div class='cta'><b>Want a private pilot?</b> — Upload your latest CSV and we’ll surface your top recovery moves in minutes.</div>", unsafe_allow_html=True)
