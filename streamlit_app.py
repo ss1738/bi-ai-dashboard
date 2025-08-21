@@ -1,970 +1,1391 @@
-# streamlit_app.py
-# -----------------------------------------------------------------------------
-# $1M-Quality AI BI Dashboard — Streamlit single-file app
-# Tabs: Home | Dashboard | Segmentation | Anomaly Detection | Forecasting | Early Access
-# Features:
-# - Professional UI with animated gradient, cards, and clean navigation
-# - URL filter support: ?region=AMER,APAC,EMEA&channel=Online,Retail,Wholesale
-# - Realistic demo business data (daily last 365d + synthetic customer data)
-# - Interactive charts (Plotly with graceful fallback)
-# - RFM-based segmentation (robust percentile method)
-# - IQR-based anomaly detection
-# - Seasonal-naive + EMA forecasting with prediction intervals
-# - Waitlist form (Google Form integration via st.secrets + local CSV fallback)
-# - Revenue-recovery messaging ($500K+ scenarios)
-# - Python 3.13-safe
-# -----------------------------------------------------------------------------
+# AI BI Dashboard - Complete Production App
+# Save as: streamlit_app.py
+#
+# Requirements.txt:
+# streamlit>=1.28.0
+# pandas>=2.0.0
+# numpy>=1.24.0
+# altair>=5.0.0
+# plotly>=5.17.0
+# scikit-learn>=1.3.0
 
-import os
-import io
-import json
-import math
-import textwrap
-from datetime import datetime, timedelta
-
-import numpy as np
-import pandas as pd
 import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from datetime import datetime, timedelta
+import base64
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import IsolationForest
+from sklearn.linear_model import LinearRegression
+import warnings
+warnings.filterwarnings('ignore')
 
-# Optional libs: plotly (interactive charts) and requests (Google Form HTTP)
-PLOTLY_AVAILABLE = True
-try:
-    import plotly.express as px
-    import plotly.graph_objects as go
-except Exception:
-    PLOTLY_AVAILABLE = False
+# ═══════════════════════════════════════════════════════════════════════════════
+# 🎨 BRANDING & CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════════
 
-REQUESTS_AVAILABLE = True
-try:
-    import requests
-except Exception:
-    REQUESTS_AVAILABLE = False
+BRAND = {
+    "name": "AI Revenue Recovery Platform",
+    "tagline": "Recover $500K+ in lost revenue with AI-powered insights",
+    "primary_color": "#6366F1",
+    "secondary_color": "#EC4899", 
+    "success_color": "#10B981",
+    "warning_color": "#F59E0B",
+    "dark_color": "#1F2937",
+    "light_color": "#F9FAFB"
+}
 
-
-# -----------------------------------------------------------------------------
-# Page & Branding
-# -----------------------------------------------------------------------------
+# Page Configuration
 st.set_page_config(
-    page_title="AI BI Dashboard — Revenue Recovery Suite",
-    page_icon="💹",
+    page_title="AI Revenue Recovery Platform",
+    page_icon="💰",
     layout="wide",
+    initial_sidebar_state="collapsed"
 )
 
-PRIMARY_GRADIENT = "linear-gradient(120deg, #0ea5e9 0%, #6366f1 50%, #22c55e 100%)"
-PRIMARY = "#6366f1"          # indigo-500
-SUCCESS = "#22c55e"          # green-500
-DANGER = "#ef4444"           # red-500
+# ═══════════════════════════════════════════════════════════════════════════════
+# 🎯 CSS STYLING - PRODUCTION READY
+# ═══════════════════════════════════════════════════════════════════════════════
 
-# Global CSS
-st.markdown(
-    f"""
+def load_css():
+    st.markdown(f"""
     <style>
-      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap');
-
-      html, body, [class*="css"] {{
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif !important;
-      }}
-
-      /* Animated gradient header bar */
-      .gradient-bar {{
-        position: fixed;
-        top: 0; left: 0; right: 0;
-        height: 4px;
-        background: {PRIMARY_GRADIENT};
-        background-size: 300% 300%;
-        animation: moveGradient 10s ease infinite;
-        z-index: 1000;
-      }}
-      @keyframes moveGradient {{
-        0% {{ background-position: 0% 50%; }}
-        50% {{ background-position: 100% 50%; }}
-        100% {{ background-position: 0% 50%; }}
-      }}
-
-      /* Card styling */
-      .kpi-card {{
-        border-radius: 18px;
-        padding: 16px 18px;
-        background: #0f172a;
-        border: 1px solid rgba(148,163,184,0.18);
-        box-shadow: 0 10px 25px rgba(2,6,23,0.55);
-        transition: transform 0.2s ease, box-shadow 0.2s ease;
-      }}
-      .kpi-card:hover {{
-        transform: translateY(-2px);
-        box-shadow: 0 16px 36px rgba(2,6,23,0.75);
-      }}
-      .kpi-title {{
-        color: #cbd5e1;
-        font-size: 13px;
-        letter-spacing: 0.3px;
-        text-transform: uppercase;
-        margin-bottom: 6px;
-      }}
-      .kpi-value {{
-        font-size: 26px;
-        font-weight: 800;
-        color: #e2e8f0;
-      }}
-      .kpi-delta {{
-        font-size: 13px;
-        font-weight: 600;
-      }}
-
-      /* Section headers */
-      .section-title {{
-        font-size: 22px;
-        font-weight: 800;
-        color: #e2e8f0;
-        margin: 8px 0 4px 0;
-      }}
-      .section-sub {{
-        color: #cbd5e1;
-        font-size: 14px;
-        margin-bottom: 16px;
-      }}
-
-      .pill {{
-        display: inline-block;
-        padding: 6px 12px;
-        border-radius: 999px;
-        font-weight: 700;
-        font-size: 12px;
-        letter-spacing: .4px;
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    
+    :root {{
+        --primary: {BRAND['primary_color']};
+        --secondary: {BRAND['secondary_color']};
+        --success: {BRAND['success_color']};
+        --warning: {BRAND['warning_color']};
+        --dark: {BRAND['dark_color']};
+        --light: {BRAND['light_color']};
+    }}
+    
+    /* Hide Streamlit branding */
+    #MainMenu {{visibility: hidden;}}
+    .stDeployButton {{display:none;}}
+    footer {{visibility: hidden;}}
+    .stApp > header {{visibility: hidden;}}
+    
+    /* Main app styling */
+    .stApp {{
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }}
+    
+    .main .block-container {{
+        padding: 2rem 1rem;
+        max-width: 1200px;
+    }}
+    
+    /* Hero Section */
+    .hero {{
+        background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+        padding: 4rem 2rem;
+        border-radius: 20px;
+        text-align: center;
         color: white;
-        background: {PRIMARY_GRADIENT};
-      }}
-
-      @media (max-width: 768px) {{
-        .kpi-value {{ font-size: 22px; }}
-        .section-title {{ font-size: 18px; }}
-      }}
+        margin: 2rem 0;
+        box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+        animation: fadeInUp 0.8s ease-out;
+    }}
+    
+    .hero h1 {{
+        font-size: 3.5rem;
+        font-weight: 700;
+        margin-bottom: 1rem;
+        background: linear-gradient(45deg, #ffffff, #f0f9ff);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }}
+    
+    .hero p {{
+        font-size: 1.3rem;
+        opacity: 0.95;
+        margin-bottom: 2rem;
+    }}
+    
+    /* Navigation */
+    .nav-container {{
+        background: white;
+        padding: 1rem 2rem;
+        border-radius: 15px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+        margin: 2rem 0;
+        display: flex;
+        justify-content: center;
+        flex-wrap: wrap;
+        gap: 1rem;
+    }}
+    
+    .nav-btn {{
+        background: linear-gradient(135deg, var(--primary), var(--secondary));
+        color: white;
+        padding: 12px 24px;
+        border: none;
+        border-radius: 10px;
+        cursor: pointer;
+        font-weight: 600;
+        transition: all 0.3s ease;
+        text-decoration: none;
+        display: inline-block;
+    }}
+    
+    .nav-btn:hover {{
+        transform: translateY(-2px);
+        box-shadow: 0 8px 25px rgba(99, 102, 241, 0.3);
+    }}
+    
+    .nav-btn.active {{
+        background: var(--dark);
+        transform: translateY(-2px);
+        box-shadow: 0 8px 25px rgba(31, 41, 55, 0.3);
+    }}
+    
+    /* Cards */
+    .metric-card {{
+        background: white;
+        padding: 2rem;
+        border-radius: 15px;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.08);
+        border: 1px solid rgba(255,255,255,0.2);
+        transition: all 0.3s ease;
+        height: 100%;
+    }}
+    
+    .metric-card:hover {{
+        transform: translateY(-5px);
+        box-shadow: 0 15px 40px rgba(0,0,0,0.12);
+    }}
+    
+    .metric-value {{
+        font-size: 2.5rem;
+        font-weight: 700;
+        color: var(--primary);
+        margin: 0.5rem 0;
+    }}
+    
+    .metric-label {{
+        color: #6B7280;
+        font-weight: 500;
+        margin-bottom: 0.5rem;
+    }}
+    
+    .metric-delta {{
+        font-weight: 600;
+        font-size: 0.9rem;
+    }}
+    
+    .delta-positive {{ color: var(--success); }}
+    .delta-negative {{ color: #EF4444; }}
+    
+    /* Success Messages */
+    .success-box {{
+        background: linear-gradient(135deg, var(--success), #059669);
+        color: white;
+        padding: 1.5rem;
+        border-radius: 12px;
+        margin: 1rem 0;
+        font-weight: 600;
+    }}
+    
+    /* Feature Cards */
+    .feature-card {{
+        background: white;
+        padding: 2rem;
+        border-radius: 15px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.05);
+        text-align: center;
+        transition: all 0.3s ease;
+        border: 2px solid transparent;
+    }}
+    
+    .feature-card:hover {{
+        border-color: var(--primary);
+        transform: translateY(-3px);
+        box-shadow: 0 8px 30px rgba(99, 102, 241, 0.15);
+    }}
+    
+    .feature-icon {{
+        font-size: 3rem;
+        margin-bottom: 1rem;
+    }}
+    
+    /* Form Styling */
+    .waitlist-form {{
+        background: white;
+        padding: 3rem 2rem;
+        border-radius: 20px;
+        box-shadow: 0 20px 60px rgba(0,0,0,0.1);
+        max-width: 600px;
+        margin: 2rem auto;
+    }}
+    
+    .stTextInput > div > div > input {{
+        border-radius: 10px;
+        border: 2px solid #E5E7EB;
+        padding: 12px 16px;
+        font-size: 16px;
+        transition: all 0.3s ease;
+    }}
+    
+    .stTextInput > div > div > input:focus {{
+        border-color: var(--primary);
+        box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+    }}
+    
+    .stSelectbox > div > div > div {{
+        border-radius: 10px;
+        border: 2px solid #E5E7EB;
+    }}
+    
+    /* Animations */
+    @keyframes fadeInUp {{
+        from {{
+            opacity: 0;
+            transform: translateY(30px);
+        }}
+        to {{
+            opacity: 1;
+            transform: translateY(0);
+        }}
+    }}
+    
+    @keyframes pulse {{
+        0%, 100% {{ transform: scale(1); }}
+        50% {{ transform: scale(1.05); }}
+    }}
+    
+    .animate-pulse {{
+        animation: pulse 2s infinite;
+    }}
+    
+    /* Responsive Design */
+    @media (max-width: 768px) {{
+        .hero h1 {{ font-size: 2.5rem; }}
+        .hero p {{ font-size: 1.1rem; }}
+        .nav-container {{ flex-direction: column; }}
+        .metric-card {{ margin-bottom: 1rem; }}
+    }}
+    
+    /* Custom Plotly styling */
+    .js-plotly-plot {{
+        border-radius: 15px;
+        overflow: hidden;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+    }}
     </style>
-    <div class="gradient-bar"></div>
-    """,
-    unsafe_allow_html=True,
-)
+    """, unsafe_allow_html=True)
 
-# -----------------------------------------------------------------------------
-# Utilities
-# -----------------------------------------------------------------------------
-def fmt_money(x: float) -> str:
-    try:
-        if abs(x) >= 1_000_000:
-            return f"${x/1_000_000:,.2f}M"
-        if abs(x) >= 1_000:
-            return f"${x/1_000:,.1f}K"
-        return f"${x:,.0f}"
-    except Exception:
-        return "$0"
+# ═══════════════════════════════════════════════════════════════════════════════
+# 📊 DATA GENERATION - REALISTIC BUSINESS DATA
+# ═══════════════════════════════════════════════════════════════════════════════
 
-def fmt_pct(x: float) -> str:
-    try:
-        return f"{x*100:.2f}%"
-    except Exception:
-        return "0.00%"
+@st.cache_data
+def generate_business_data():
+    """Generate realistic business data with revenue recovery opportunities"""
+    np.random.seed(42)
+    
+    # Date range - last 2 years
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=730)
+    dates = pd.date_range(start_date, end_date, freq='D')
+    
+    # Business segments
+    segments = ['Enterprise', 'Mid-Market', 'SMB', 'Startup']
+    channels = ['Direct Sales', 'Partner', 'Online', 'Retail']
+    regions = ['North America', 'Europe', 'Asia Pacific', 'Latin America']
+    products = ['Platform Pro', 'Analytics Suite', 'AI Insights', 'Basic Plan']
+    
+    data = []
+    
+    for date in dates:
+        # Seasonal patterns
+        month = date.month
+        seasonal_multiplier = 1.2 if month in [11, 12] else (0.8 if month in [7, 8] else 1.0)
+        
+        # Weekly patterns
+        weekday = date.weekday()
+        weekly_multiplier = 0.7 if weekday >= 5 else 1.0
+        
+        for segment in segments:
+            for channel in channels:
+                for region in regions:
+                    # Base revenue with business logic
+                    base_revenue = {
+                        'Enterprise': 50000,
+                        'Mid-Market': 15000, 
+                        'SMB': 5000,
+                        'Startup': 1500
+                    }[segment]
+                    
+                    # Channel multipliers
+                    channel_mult = {
+                        'Direct Sales': 1.3,
+                        'Partner': 1.1,
+                        'Online': 0.9,
+                        'Retail': 0.8
+                    }[channel]
+                    
+                    # Region multipliers
+                    region_mult = {
+                        'North America': 1.2,
+                        'Europe': 1.0,
+                        'Asia Pacific': 0.9,
+                        'Latin America': 0.7
+                    }[region]
+                    
+                    # Calculate final revenue with noise
+                    revenue = (base_revenue * seasonal_multiplier * weekly_multiplier * 
+                             channel_mult * region_mult * np.random.normal(1, 0.15))
+                    revenue = max(0, revenue)
+                    
+                    # Calculate related metrics
+                    customers = max(1, int(np.random.poisson(revenue / (base_revenue / 10))))
+                    avg_deal_size = revenue / customers if customers > 0 else 0
+                    churn_rate = np.random.uniform(0.02, 0.08)  # 2-8% monthly
+                    
+                    # Add some anomalies (revenue recovery opportunities)
+                    if np.random.random() < 0.05:  # 5% chance of anomaly
+                        revenue *= 0.3  # Significant revenue drop
+                    
+                    data.append({
+                        'date': date,
+                        'segment': segment,
+                        'channel': channel,
+                        'region': region,
+                        'product': np.random.choice(products),
+                        'revenue': revenue,
+                        'customers': customers,
+                        'avg_deal_size': avg_deal_size,
+                        'churn_rate': churn_rate,
+                        'cost_of_acquisition': revenue * np.random.uniform(0.15, 0.35),
+                        'lifetime_value': revenue * np.random.uniform(2, 6)
+                    })
+    
+    return pd.DataFrame(data)
 
-def pct_delta(cur, prev):
-    try:
-        prev = float(prev)
-        return 0.0 if prev == 0 else (float(cur) - prev) / prev
-    except Exception:
-        return 0.0
+# ═══════════════════════════════════════════════════════════════════════════════
+# 🧠 AI/ML FUNCTIONS
+# ═══════════════════════════════════════════════════════════════════════════════
 
-def safe_mean(s: pd.Series, fallback: float = 0.0) -> float:
-    try:
-        val = float(s.mean())
-        if math.isnan(val) or math.isinf(val):
-            return fallback
-        return val
-    except Exception:
-        return fallback
+def perform_segmentation(df):
+    """Perform customer segmentation analysis"""
+    # Aggregate data by segment
+    segment_data = df.groupby('segment').agg({
+        'revenue': 'sum',
+        'customers': 'sum',
+        'avg_deal_size': 'mean',
+        'churn_rate': 'mean',
+        'lifetime_value': 'mean'
+    }).reset_index()
+    
+    # Features for clustering
+    features = ['revenue', 'customers', 'avg_deal_size', 'lifetime_value']
+    X = segment_data[features]
+    
+    # Normalize features
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    
+    # Perform clustering
+    kmeans = KMeans(n_clusters=3, random_state=42)
+    segment_data['cluster'] = kmeans.fit_predict(X_scaled)
+    
+    # Add cluster labels
+    cluster_labels = {0: 'High Value', 1: 'Growing', 2: 'Opportunity'}
+    segment_data['cluster_name'] = segment_data['cluster'].map(cluster_labels)
+    
+    return segment_data
 
-def safe_sum(s: pd.Series, fallback: float = 0.0) -> float:
-    try:
-        val = float(s.sum())
-        if math.isnan(val) or math.isinf(val):
-            return fallback
-        return val
-    except Exception:
-        return fallback
+def detect_anomalies(df):
+    """Detect revenue anomalies using Isolation Forest"""
+    # Daily revenue aggregation
+    daily_revenue = df.groupby('date')['revenue'].sum().reset_index()
+    
+    # Features for anomaly detection
+    daily_revenue['day_of_week'] = daily_revenue['date'].dt.dayofweek
+    daily_revenue['month'] = daily_revenue['date'].dt.month
+    daily_revenue['revenue_lag1'] = daily_revenue['revenue'].shift(1)
+    daily_revenue['revenue_lag7'] = daily_revenue['revenue'].shift(7)
+    
+    # Remove NaN values
+    daily_revenue = daily_revenue.dropna()
+    
+    # Features for model
+    features = ['revenue', 'day_of_week', 'month', 'revenue_lag1', 'revenue_lag7']
+    X = daily_revenue[features]
+    
+    # Isolation Forest
+    iso_forest = IsolationForest(contamination=0.1, random_state=42)
+    daily_revenue['anomaly'] = iso_forest.fit_predict(X)
+    daily_revenue['anomaly_score'] = iso_forest.score_samples(X)
+    
+    # Filter anomalies
+    anomalies = daily_revenue[daily_revenue['anomaly'] == -1].copy()
+    anomalies['potential_loss'] = anomalies['revenue'] * 0.3  # Estimated recovery potential
+    
+    return anomalies.sort_values('date', ascending=False)
 
-def download_button(df: pd.DataFrame, label: str, filename: str):
-    buf = io.StringIO()
-    df.to_csv(buf, index=False)
-    st.download_button(label, buf.getvalue(), file_name=filename, mime="text/csv")
-
-
-# -----------------------------------------------------------------------------
-# URL Filter Handling (region/channel)
-# -----------------------------------------------------------------------------
-ALL_REGIONS = ["AMER", "APAC", "EMEA"]
-ALL_CHANNELS = ["Online", "Retail", "Wholesale"]
-
-# Default mix (sums to 1.0 each)
-REGION_WEIGHTS = {"AMER": 0.45, "APAC": 0.30, "EMEA": 0.25}
-CHANNEL_WEIGHTS = {"Online": 0.60, "Retail": 0.30, "Wholesale": 0.10}
-
-def get_query_params():
-    # Streamlit >=1.32
-    try:
-        qp = st.query_params  # mapping-like
-        return {k: v for k, v in qp.items()}
-    except Exception:
-        # Older API fallback
-        try:
-            return st.experimental_get_query_params()
-        except Exception:
-            return {}
-
-def set_query_params(**kwargs):
-    try:
-        # New API
-        current = dict(get_query_params())
-        current.update({k:v for k,v in kwargs.items() if v is not None})
-        st.query_params.clear()
-        for k, v in current.items():
-            st.query_params[k] = v
-    except Exception:
-        # Fallback
-        try:
-            st.experimental_set_query_params(**kwargs)
-        except Exception:
-            pass
-
-def parse_csv_param(val, allowed):
-    if not val:
-        return allowed[:]
-    if isinstance(val, list):
-        # could be already list from Streamlit
-        raw = ",".join(val)
-    else:
-        raw = str(val)
-    selected = [x.strip() for x in raw.split(",") if x.strip()]
-    # keep only allowed ones, preserve order from allowed
-    return [a for a in allowed if a in selected] or allowed[:]
-
-def compute_filter_factor(regions_selected, channels_selected):
-    # independence assumption => factor = sum(w_r) * sum(w_c)
-    wr = sum(REGION_WEIGHTS.get(r, 0) for r in regions_selected)
-    wc = sum(CHANNEL_WEIGHTS.get(c, 0) for c in channels_selected)
-    # clamp to [0,1]; ensure nonzero minimum to avoid fully blank views
-    wr = min(max(wr, 0.0), 1.0)
-    wc = min(max(wc, 0.0), 1.0)
-    return max(wr * wc, 0.0)
-
-
-# -----------------------------------------------------------------------------
-# Demo Data (cached) — Python 3.13-safe
-# -----------------------------------------------------------------------------
-@st.cache_data(show_spinner=False)
-def generate_demo_data(seed: int = 42):
-    rng = np.random.default_rng(seed)
-    today = datetime.utcnow().date()
-    start = today - timedelta(days=365)
-    dates = pd.date_range(start, periods=366, freq="D")
-
-    # Traffic & commerce dynamics
-    base_sessions = 5000
-    weekly_seasonality = (np.sin(2 * np.pi * np.arange(len(dates)) / 7) + 1) / 2  # 0..1
-    promo_spikes = np.zeros(len(dates))
-    promo_days = rng.choice(np.arange(30, len(dates)-30), size=8, replace=False)
-    promo_spikes[promo_days] = rng.integers(1000, 4000, size=len(promo_days))
-
-    sessions = (base_sessions
-                + weekly_seasonality * 1500
-                + promo_spikes
-                + rng.normal(0, 350, len(dates))).clip(min=500)
-
-    # Conversion rate: base 2.8%, seasonal variation, promo efficiency
-    conv = (0.028
-            + 0.004 * ((np.cos(2 * np.pi * np.arange(len(dates)) / 30) + 1)/2)
-            + (promo_spikes > 0) * 0.003
-            + rng.normal(0, 0.0012, len(dates))).clip(0.01, 0.065)
-
-    # AOV: base $62 with modest variance and weekend uplift
-    day_of_week = pd.Series(dates).dt.dayofweek.values
-    aov = (62
-           + (day_of_week >= 5) * 4  # weekend uplift
-           + rng.normal(0, 2.5, len(dates))).clip(35, 120)
-
-    # Refund rate
-    refund_rate = (0.030
-                   + 0.002 * ((np.sin(2 * np.pi * np.arange(len(dates)) / 45) + 1)/2)
-                   + rng.normal(0, 0.0008, len(dates))).clip(0.005, 0.08)
-
-    # Revenue metrics
-    orders = (sessions * conv).round().astype(int)
-    gross_revenue = orders * aov
-    refunds = gross_revenue * refund_rate
-    net_revenue = gross_revenue - refunds
-
-    kpis = pd.DataFrame({
-        "date": dates,
-        "sessions": sessions.astype(int),
-        "conversion_rate": conv,
-        "orders": orders,
-        "aov": aov,
-        "gross_revenue": gross_revenue,
-        "refund_rate": refund_rate,
-        "refunds": refunds,
-        "net_revenue": net_revenue,
+def generate_forecast(df, days=30):
+    """Generate revenue forecast using linear regression"""
+    # Daily revenue aggregation
+    daily_revenue = df.groupby('date')['revenue'].sum().reset_index()
+    daily_revenue['day_num'] = (daily_revenue['date'] - daily_revenue['date'].min()).dt.days
+    
+    # Train model
+    X = daily_revenue[['day_num']].values
+    y = daily_revenue['revenue'].values
+    
+    model = LinearRegression()
+    model.fit(X, y)
+    
+    # Generate forecast
+    last_day = daily_revenue['day_num'].max()
+    future_days = np.arange(last_day + 1, last_day + days + 1).reshape(-1, 1)
+    forecast = model.predict(future_days)
+    
+    # Create forecast dataframe
+    future_dates = pd.date_range(daily_revenue['date'].max() + timedelta(days=1), periods=days)
+    forecast_df = pd.DataFrame({
+        'date': future_dates,
+        'forecast': forecast,
+        'type': 'forecast'
     })
+    
+    # Historical data
+    historical_df = daily_revenue[['date', 'revenue']].copy()
+    historical_df['forecast'] = historical_df['revenue']
+    historical_df['type'] = 'historical'
+    
+    return pd.concat([historical_df, forecast_df])
 
-    # Synthetic customer base (RFM)
-    n_customers = 5000
-    cust_ids = [f"C{100000 + i}" for i in range(n_customers)]
-    first_purchase_dates = rng.choice(dates[:150], size=n_customers, replace=True)
-    last_purchase_dates = []
-    frequency = []
-    monetary = []
-    for i in range(n_customers):
-        fp = pd.Timestamp(first_purchase_dates[i]).date()
-        recent_bias = int(np.int64(np.asarray(np.random.default_rng().integers(0, 200))))
-        extra = int(np.int64(np.asarray(np.random.default_rng().integers(0, 60))))
-        lp_date = fp + timedelta(days=int(recent_bias + extra))
-        lp = min(today, lp_date)
-        last_purchase_dates.append(lp)
-        freq_base = int(np.random.poisson(2))
-        recent_boost = 1 if (today - lp).days < 60 else 0
-        freq = max(1, int(freq_base + recent_boost))
-        frequency.append(freq)
-        monetary.append(max(20.0, float(np.random.normal(65, 25))))
-    customers = pd.DataFrame({
-        "customer_id": cust_ids,
-        "first_purchase": pd.to_datetime(first_purchase_dates),
-        "last_purchase": pd.to_datetime(last_purchase_dates),
-        "frequency": frequency,
-        "monetary": monetary,
-    })
-    customers["recency_days"] = (pd.Timestamp(today) - customers["last_purchase"]).dt.days
+# ═══════════════════════════════════════════════════════════════════════════════
+# 🎯 NAVIGATION SYSTEM
+# ═══════════════════════════════════════════════════════════════════════════════
 
-    return kpis, customers
+def render_navigation():
+    """Render professional navigation"""
+    
+    # Initialize session state
+    if 'current_page' not in st.session_state:
+        st.session_state.current_page = 'Home'
+    
+    pages = {
+        'Home': '🏠',
+        'Dashboard': '📊', 
+        'Segmentation': '🎯',
+        'Anomaly Detection': '🚨',
+        'Forecasting': '📈',
+        'Early Access': '🚀'
+    }
+    
+    # Navigation HTML
+    nav_html = '<div class="nav-container">'
+    for page, icon in pages.items():
+        active_class = 'active' if st.session_state.current_page == page else ''
+        nav_html += f'''
+        <button class="nav-btn {active_class}" onclick="setPage('{page}')">
+            {icon} {page}
+        </button>
+        '''
+    nav_html += '</div>'
+    
+    # JavaScript for navigation
+    nav_html += '''
+    <script>
+    function setPage(page) {
+        window.parent.postMessage({type: 'streamlit:setComponentValue', value: page}, '*');
+    }
+    </script>
+    '''
+    
+    st.markdown(nav_html, unsafe_allow_html=True)
+    
+    # Page selection
+    cols = st.columns(len(pages))
+    for i, (page, icon) in enumerate(pages.items()):
+        with cols[i]:
+            if st.button(f"{icon} {page}", key=f"nav_{page}", use_container_width=True):
+                st.session_state.current_page = page
+                st.rerun()
 
-kpis_base, customers = generate_demo_data()
+# ═══════════════════════════════════════════════════════════════════════════════
+# 📱 PAGE COMPONENTS
+# ═══════════════════════════════════════════════════════════════════════════════
 
-# -----------------------------------------------------------------------------
-# Apply URL Filters to KPIs
-# -----------------------------------------------------------------------------
-params = get_query_params()
-regions_selected = parse_csv_param(params.get("region"), ALL_REGIONS)
-channels_selected = parse_csv_param(params.get("channel"), ALL_CHANNELS)
-factor = compute_filter_factor(regions_selected, channels_selected)
-
-def apply_factor_to_kpis(df: pd.DataFrame, factor: float) -> pd.DataFrame:
-    df = df.copy()
-    # Scale volume & money cols; keep rates steady
-    for col in ["sessions", "orders", "gross_revenue", "refunds", "net_revenue"]:
-        if col in df.columns:
-            if col in ["sessions", "orders"]:
-                df[col] = (df[col] * factor).round().astype(int)
-            else:
-                df[col] = df[col] * factor
-    return df
-
-kpis = apply_factor_to_kpis(kpis_base, factor)
-
-# Windows
-today = kpis["date"].max().date()
-last_30 = kpis[kpis["date"] >= (pd.Timestamp(today) - pd.Timedelta(days=30))]
-prev_30 = kpis[(kpis["date"] < (pd.Timestamp(today) - pd.Timedelta(days=30))) &
-               (kpis["date"] >= (pd.Timestamp(today) - pd.Timedelta(days=60)))]
-
-# -----------------------------------------------------------------------------
-# Viz Helpers
-# -----------------------------------------------------------------------------
-def plot_line(df: pd.DataFrame, x: str, y: str, title: str, highlight=None):
-    if PLOTLY_AVAILABLE:
-        fig = px.line(df, x=x, y=y, title=title)
-        fig.update_layout(
-            height=380,
-            margin=dict(l=10, r=10, t=50, b=10),
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(15,23,42,1)",
-            font=dict(color="#e2e8f0"),
-            xaxis=dict(gridcolor="rgba(148,163,184,0.12)"),
-            yaxis=dict(gridcolor="rgba(148,163,184,0.12)"),
-        )
-        if highlight is not None and len(highlight) > 0:
-            fig.add_trace(
-                go.Scatter(
-                    x=highlight[x],
-                    y=highlight[y],
-                    mode="markers",
-                    marker=dict(size=9),
-                    name="Anomaly",
-                )
-            )
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.line_chart(df.set_index(x)[y])
-
-def plot_scatter(df: pd.DataFrame, x: str, y: str, color: str, title: str, tooltip=None):
-    if PLOTLY_AVAILABLE:
-        fig = px.scatter(df, x=x, y=y, color=color, hover_data=tooltip or [], title=title)
-        fig.update_layout(
-            height=420,
-            margin=dict(l=10, r=10, t=50, b=10),
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(15,23,42,1)",
-            font=dict(color="#e2e8f0"),
-            xaxis=dict(gridcolor="rgba(148,163,184,0.12)"),
-            yaxis=dict(gridcolor="rgba(148,163,184,0.12)"),
-            legend=dict(bgcolor="rgba(15,23,42,0.6)")
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.write("Interactive scatter requires Plotly; falling back to table:")
-        st.dataframe(df[[x, y, color] + (tooltip or [])])
-
-def kpi_card(title: str, value, delta: float = None, delta_hint: str = "vs prev 30d"):
-    st.markdown('<div class="kpi-card">', unsafe_allow_html=True)
-    st.markdown(f'<div class="kpi-title">{title}</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="kpi-value">{value}</div>', unsafe_allow_html=True)
-    if delta is not None:
-        color = SUCCESS if delta >= 0 else DANGER
-        sign = "▲" if delta >= 0 else "▼"
-        st.markdown(
-            f'<div class="kpi-delta" style="color:{color}">{sign} {delta*100:.2f}% {delta_hint}</div>',
-            unsafe_allow_html=True,
-        )
-    st.markdown('</div>', unsafe_allow_html=True)
-
-# -----------------------------------------------------------------------------
-# RFM Segmentation
-# -----------------------------------------------------------------------------
-def quintile_score(series: pd.Series, reverse: bool = False) -> pd.Series:
-    ranks = series.rank(method="first", pct=True)
-    pct = (1 - ranks) if reverse else ranks
-    scores = np.ceil(pct * 5).astype(int)
-    return scores.clip(1, 5)
-
-def rfm_segmentation(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    out["R"] = quintile_score(out["recency_days"], reverse=True)
-    out["F"] = quintile_score(out["frequency"], reverse=False)
-    out["M"] = quintile_score(out["monetary"], reverse=False)
-    out["RFM_Score"] = out["R"]*100 + out["F"]*10 + out["M"]
-    seg = []
-    for _, row in out.iterrows():
-        if row["R"] >= 4 and row["F"] >= 4 and row["M"] >= 4:
-            seg.append("Champions")
-        elif row["R"] >= 4 and row["F"] >= 3:
-            seg.append("Loyal")
-        elif row["R"] <= 2 and row["F"] >= 3 and row["M"] >= 3:
-            seg.append("At Risk")
-        elif row["R"] <= 2 and row["F"] <= 2:
-            seg.append("Churn Risk")
-        elif row["R"] >= 4 and row["F"] <= 2:
-            seg.append("Promising")
-        else:
-            seg.append("Needs Nurture")
-    out["segment"] = seg
-    return out
-
-# -----------------------------------------------------------------------------
-# Anomaly Detection
-# -----------------------------------------------------------------------------
-def iqr_anomalies(series: pd.Series, window:int=14, sensitivity: float=1.5):
-    s = series.copy().astype(float)
-    med = s.rolling(window=window, min_periods=3, center=True).median()
-    resid = s - med
-    q1 = resid.rolling(window=window, min_periods=3).quantile(0.25)
-    q3 = resid.rolling(window=window, min_periods=3).quantile(0.75)
-    iqr = (q3 - q1).fillna(0)
-    lower = (q1 - sensitivity * iqr).fillna(-np.inf)
-    upper = (q3 + sensitivity * iqr).fillna(np.inf)
-    return ((resid < lower) | (resid > upper)).fillna(False)
-
-# -----------------------------------------------------------------------------
-# Forecasting
-# -----------------------------------------------------------------------------
-def seasonal_naive_forecast(df: pd.DataFrame, y: str, periods: int=30, season:int=7):
-    hist = df.set_index("date")[y].astype(float)
-    ema = hist.ewm(alpha=0.3).mean()
-    resid = hist - ema
-    resid_std = float(np.nanstd(resid[-90:])) if len(resid) >= 30 else float(np.nanstd(resid))
-
-    last_date = df["date"].max()
-    future_dates = pd.date_range(last_date + pd.Timedelta(days=1), periods=periods, freq="D")
-    fc_vals = []
-    for i, _ in enumerate(future_dates):
-        if len(hist) >= season:
-            seasonal_idx = -season + (i % season)
-            base = float(hist.iloc[seasonal_idx])
-        else:
-            base = float(hist.iloc[-1])
-        drift = float(ema.iloc[-1]) - float(ema.iloc[-season]) if len(ema) > season else 0.0
-        fc = base + (drift * ((i+1)/periods))
-        fc_vals.append(fc)
-
-    forecast = pd.DataFrame({"date": future_dates, "forecast": fc_vals})
-    pi = 1.96 * resid_std
-    forecast["pi_low"] = forecast["forecast"] - pi
-    forecast["pi_high"] = forecast["forecast"] + pi
-    return forecast
-
-# -----------------------------------------------------------------------------
-# Revenue Recovery Calculator
-# -----------------------------------------------------------------------------
-def revenue_recovery_opportunity(df_last_30: pd.DataFrame):
-    if len(df_last_30) == 0:
-        return {"conv_uplift": 0.0, "refund_reduction": 0.0, "total": 0.0}
-
-    sessions = float(df_last_30["sessions"].sum())
-    cur_aov = safe_mean(df_last_30["aov"], 60.0)
-
-    delta_conv = 0.003    # +0.30pp
-    delta_refund = -0.010 # -1.0pp
-
-    add_orders = sessions * delta_conv
-    conv_uplift = add_orders * cur_aov
-
-    gross_rev = float(df_last_30["gross_revenue"].sum())
-    refund_reduction = gross_rev * abs(delta_refund)
-
-    total = conv_uplift + refund_reduction
-    return {"conv_uplift": conv_uplift, "refund_reduction": refund_reduction, "total": total}
-
-
-# -----------------------------------------------------------------------------
-# Header
-# -----------------------------------------------------------------------------
-col_left, col_right = st.columns([0.8, 0.2])
-with col_left:
-    st.markdown(
-        f"""
-        <div style="padding: 6px 0 2px 0;">
-          <span class="pill">AI Revenue Recovery</span>
-          <div class="section-title" style="margin-top:10px;">AI BI Dashboard — Recover Up To $500K+</div>
-          <div class="section-sub">Real-time insights. Automated revenue defenses. Forecasts with action plans.</div>
+def render_hero():
+    """Render hero section"""
+    st.markdown(f"""
+    <div class="hero">
+        <h1>💰 {BRAND['name']}</h1>
+        <p>{BRAND['tagline']}</p>
+        <div style="display: flex; justify-content: center; gap: 2rem; margin-top: 2rem;">
+            <div style="text-align: center;">
+                <div style="font-size: 2rem; font-weight: bold;">$500K+</div>
+                <div style="opacity: 0.9;">Average Recovery</div>
+            </div>
+            <div style="text-align: center;">
+                <div style="font-size: 2rem; font-weight: bold;">87%</div>
+                <div style="opacity: 0.9;">Success Rate</div>
+            </div>
+            <div style="text-align: center;">
+                <div style="font-size: 2rem; font-weight: bold;">30 Days</div>
+                <div style="opacity: 0.9;">Average ROI Time</div>
+            </div>
         </div>
-        """, unsafe_allow_html=True
-    )
-with col_right:
-    st.markdown(
-        f"""
-        <div style="text-align:right;margin-top:6px;">
-          <a href="#" style="
-            text-decoration:none;color:white;font-weight:800;
-            background:{PRIMARY_GRADIENT};padding:10px 14px;border-radius:12px;display:inline-block;">
-            Launch Playbook
-          </a>
-        </div>
-        """, unsafe_allow_html=True
-    )
-
-# Visible filter controls synced with URL
-flt1, flt2 = st.columns([0.65, 0.35])
-with flt1:
-    st.markdown(
-        f"<div class='section-sub'>Filters active — "
-        f"<b>Region:</b> {', '.join(regions_selected)} · "
-        f"<b>Channel:</b> {', '.join(channels_selected)} "
-        f"(factor: {factor:.2f})</div>",
-        unsafe_allow_html=True
-    )
-with flt2:
-    with st.expander("Adjust Filters (sync to URL)"):
-        sel_regions = st.multiselect("Regions", ALL_REGIONS, default=regions_selected)
-        sel_channels = st.multiselect("Channels", ALL_CHANNELS, default=channels_selected)
-        if st.button("Apply Filters"):
-            # update URL with CSV params
-            set_query_params(
-                region=",".join(sel_regions) if sel_regions else ",".join(ALL_REGIONS),
-                channel=",".join(sel_channels) if sel_channels else ",".join(ALL_CHANNELS),
-            )
-            st.experimental_rerun()
-
-st.divider()
-
-
-# -----------------------------------------------------------------------------
-# Tabs
-# -----------------------------------------------------------------------------
-tab_home, tab_dash, tab_seg, tab_ano, tab_fc, tab_wait = st.tabs(
-    ["🏠 Home", "📊 Dashboard", "👥 Segmentation", "🧪 Anomaly Detection", "📈 Forecasting", "🚀 Early Access"]
-)
-
-
-# -----------------------------------------------------------------------------
-# HOME
-# -----------------------------------------------------------------------------
-with tab_home:
-    with st.container():
-        c1, c2, c3, c4 = st.columns(4)
-        cur_rev = float(last_30["net_revenue"].sum())
-        prev_rev = float(prev_30["net_revenue"].sum())
-        cur_orders = int(last_30["orders"].sum())
-        prev_orders = int(prev_30["orders"].sum()) if len(prev_30) else 0
-        cur_conv = safe_mean(last_30["conversion_rate"])
-        prev_conv = safe_mean(prev_30["conversion_rate"], cur_conv)
-        cur_ref = safe_mean(last_30["refund_rate"])
-        prev_ref = safe_mean(prev_30["refund_rate"], cur_ref)
-
-        with c1:
-            kpi_card("Net Revenue (30d)", fmt_money(cur_rev), pct_delta(cur_rev, prev_rev))
-        with c2:
-            kpi_card("Orders (30d)", f"{cur_orders:,}", pct_delta(cur_orders, prev_orders))
-        with c3:
-            kpi_card("Avg Conversion Rate", fmt_pct(cur_conv), pct_delta(cur_conv, prev_conv))
-        with c4:
-            kpi_card("Avg Refund Rate", fmt_pct(cur_ref), -pct_delta(cur_ref, prev_ref))
-
-    opportunity = revenue_recovery_opportunity(last_30)
-    st.markdown(
-        f"""
-        <div class="section-title">Revenue Recovery Opportunity (Next 30 Days)</div>
-        <div class="section-sub">Modeling a +0.30pp conversion lift and a -1.0pp refund-rate reduction.</div>
-        """, unsafe_allow_html=True
-    )
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        kpi_card("Conversion Uplift", fmt_money(opportunity["conv_uplift"]))
-    with c2:
-        kpi_card("Refund Reduction", fmt_money(opportunity["refund_reduction"]))
-    with c3:
-        kpi_card("Total Recoverable (Est.)", fmt_money(opportunity["total"]))
-    st.caption("These are conservative, data-driven estimates grounded in your last 30 days and the active filters.")
-
-    st.markdown("<div class='section-title'>Revenue Over Time</div>", unsafe_allow_html=True)
-    plot_line(kpis, "date", "net_revenue", "Net Revenue (Daily)")
-
-    with st.expander("Download demo data (filtered view affects revenue & volume only)"):
-        download_button(kpis, "Download KPI Time Series (CSV)", "kpis_demo_filtered.csv")
-        download_button(customers, "Download Customers (CSV)", "customers_demo.csv")
-
-    st.success("Tip: Jump to **Early Access** to join the waitlist and unlock pilot pricing.")
-
-
-# -----------------------------------------------------------------------------
-# DASHBOARD
-# -----------------------------------------------------------------------------
-with tab_dash:
-    st.markdown("<div class='section-title'>Business Overview</div>", unsafe_allow_html=True)
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        kpi_card("Gross Revenue (30d)", fmt_money(float(last_30["gross_revenue"].sum())))
-    with c2:
-        kpi_card("Net Revenue (30d)", fmt_money(float(last_30["net_revenue"].sum())))
-    with c3:
-        kpi_card("AOV (30d avg)", fmt_money(float(last_30["aov"].mean())))
-    with c4:
-        kpi_card("Sessions (30d)", f"{int(last_30['sessions'].sum()):,}")
-
-    left, right = st.columns([0.62, 0.38], gap="large")
-
-    with left:
-        plot_line(kpis, "date", "gross_revenue", "Gross Revenue (Daily)")
-        plot_line(kpis, "date", "orders", "Orders (Daily)")
-
-    with right:
-        st.markdown("<div class='section-title'>AI Insights</div>", unsafe_allow_html=True)
-        last_7 = kpis[kpis["date"] >= (pd.Timestamp(today) - pd.Timedelta(days=7))]
-        prev_7 = kpis[(kpis["date"] < (pd.Timestamp(today) - pd.Timedelta(days=0))) &
-                      (kpis["date"] >= (pd.Timestamp(today) - pd.Timedelta(days=14)))]
-        trend_rev = pct_delta(safe_sum(last_7["net_revenue"]), safe_sum(prev_7["net_revenue"]))
-        trend_conv = pct_delta(safe_mean(last_7["conversion_rate"], 0.0001), safe_mean(prev_7["conversion_rate"], 0.0001))
-        top_refund_window = kpis.sort_values("refund_rate", ascending=False).head(5)[["date","refund_rate"]]
-        bullets = [
-            f"Net revenue {'increased' if trend_rev>=0 else 'decreased'} **{abs(trend_rev)*100:.1f}%** week-over-week.",
-            f"Conversion rate {'improved' if trend_conv>=0 else 'declined'} **{abs(trend_conv)*100:.1f}%** vs prior week.",
-            f"Highest refund-rate days: {', '.join([pd.to_datetime(d).strftime('%b %d') for d in top_refund_window['date']])}.",
-            f"Projected **{fmt_money(revenue_recovery_opportunity(last_30)['total'])}** recoverable with targeted plays.",
-        ]
-        st.markdown("\n".join([f"- {b}" for b in bullets]))
-
-        st.markdown("<div class='section-title' style='margin-top:18px;'>Funnel Snapshot (Last 30d)</div>", unsafe_allow_html=True)
-        try:
-            funnel = pd.DataFrame({
-                "stage": ["Sessions", "Product Views", "Add to Cart", "Checkout", "Orders"],
-                "value": [
-                    int(last_30["sessions"].sum()),
-                    int(last_30["sessions"].sum() * 0.72),
-                    int(last_30["sessions"].sum() * 0.45),
-                    int(last_30["sessions"].sum() * 0.30),
-                    int(last_30["orders"].sum()),
-                ],
-            })
-            if PLOTLY_AVAILABLE:
-                fig = px.funnel(funnel, x="value", y="stage", title="Funnel")
-                fig.update_layout(
-                    height=420,
-                    margin=dict(l=10, r=10, t=50, b=10),
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="rgba(15,23,42,1)",
-                    font=dict(color="#e2e8f0"),
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.bar_chart(funnel.set_index("stage"))
-        except Exception as e:
-            st.warning(f"Funnel chart unavailable: {e}")
-
-
-# -----------------------------------------------------------------------------
-# SEGMENTATION
-# -----------------------------------------------------------------------------
-with tab_seg:
-    st.markdown("<div class='section-title'>Customer Segmentation (RFM)</div>", unsafe_allow_html=True)
-    seg_df = rfm_segmentation(customers)
-    seg_counts = seg_df["segment"].value_counts().reset_index()
-    seg_counts.columns = ["segment", "customers"]
-
-    c1, c2, c3 = st.columns([0.35, 0.35, 0.30])
-    with c1:
-        kpi_card("Customers", f"{len(seg_df):,}")
-        kpi_card("Champions", f"{int((seg_df['segment']=='Champions').sum()):,}")
-    with c2:
-        kpi_card("Loyal", f"{int((seg_df['segment']=='Loyal').sum()):,}")
-        kpi_card("At Risk", f"{int((seg_df['segment']=='At Risk').sum()):,}")
-    with c3:
-        kpi_card("Churn Risk", f"{int((seg_df['segment']=='Churn Risk').sum()):,}")
-        kpi_card("Promising", f"{int((seg_df['segment']=='Promising').sum()):,}")
-
-    st.markdown("<div class='section-sub'>Segments are computed with percentile-based RFM scoring — robust and dependency-light.</div>", unsafe_allow_html=True)
-
-    if PLOTLY_AVAILABLE:
-        fig = px.bar(seg_counts, x="segment", y="customers", title="Segment Counts")
-        fig.update_layout(
-            height=420,
-            margin=dict(l=10, r=10, t=50, b=10),
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(15,23,42,1)",
-            font=dict(color="#e2e8f0"),
-            xaxis=dict(gridcolor="rgba(148,163,184,0.12)"),
-            yaxis=dict(gridcolor="rgba(148,163,184,0.12)"),
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.bar_chart(seg_counts.set_index("segment"))
-
-    sample_n = min(1500, len(seg_df))
-    if sample_n > 0:
-        plot_scatter(seg_df.sample(sample_n, random_state=7),
-                     x="recency_days", y="monetary", color="segment",
-                     title="Monetary vs Recency by Segment", tooltip=["frequency","customer_id"])
-
-    with st.expander("Download Segmentation Data"):
-        download_button(seg_df, "Download RFM Segmentation (CSV)", "rfm_segmentation.csv")
-
-    st.info("Playbook: Target 'At Risk' and 'Churn Risk' with win-back; upsell 'Champions' with VIP bundles.")
-
-
-# -----------------------------------------------------------------------------
-# ANOMALY DETECTION
-# -----------------------------------------------------------------------------
-with tab_ano:
-    st.markdown("<div class='section-title'>Anomaly Detection</div>", unsafe_allow_html=True)
-
-    metric = st.selectbox("Select metric for anomaly detection", ["net_revenue", "gross_revenue", "orders", "conversion_rate", "refund_rate"], index=0)
-    window = st.slider("Rolling window (days)", min_value=7, max_value=30, value=14, step=1)
-    sensitivity = st.slider("Sensitivity (IQR multiplier)", min_value=1.0, max_value=3.0, value=1.5, step=0.1)
-
-    try:
-        mask = iqr_anomalies(kpis[metric], window=window, sensitivity=sensitivity)
-        anomalies = kpis.loc[mask, ["date", metric]].copy()
-
-        st.markdown(f"<div class='section-sub'>Flagging points whose residuals exceed ±{sensitivity:.1f}×IQR from a rolling median (window={window}).</div>", unsafe_allow_html=True)
-        plot_line(kpis[["date", metric]], "date", metric, f"{metric.replace('_',' ').title()} with Anomalies", highlight=anomalies)
-
-        if len(anomalies) > 0:
-            st.warning(f"Detected {len(anomalies)} anomalies. Highest magnitude:")
-            st.dataframe(anomalies.sort_values(metric, ascending=False).head(10))
-        else:
-            st.success("No significant anomalies at current settings.")
-    except Exception as e:
-        st.error(f"Anomaly detection error: {e}")
-
-
-# -----------------------------------------------------------------------------
-# FORECASTING
-# -----------------------------------------------------------------------------
-with tab_fc:
-    st.markdown("<div class='section-title'>Revenue Forecast (30 Days)</div>", unsafe_allow_html=True)
-    target_metric = st.selectbox("Forecast metric", ["net_revenue", "orders", "gross_revenue"], index=0)
-    horizon = st.slider("Horizon (days)", min_value=14, max_value=60, value=30, step=1)
-
-    try:
-        df_fc = kpis[["date", target_metric]].rename(columns={target_metric: "y"})
-        fc = seasonal_naive_forecast(df_fc, "y", periods=horizon)
-        hist = kpis[["date", target_metric]].tail(180).copy()
-
-        if PLOTLY_AVAILABLE:
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=hist["date"], y=hist[target_metric], name="History", mode="lines"))
-            fig.add_trace(go.Scatter(x=fc["date"], y=fc["forecast"], name="Forecast", mode="lines"))
-            fig.add_trace(go.Scatter(
-                x=pd.concat([fc["date"], fc["date"][::-1]]),
-                y=pd.concat([fc["pi_high"], fc["pi_low"][::-1]]),
-                fill="toself",
-                name="95% PI",
-                mode="lines",
-                line=dict(width=0),
-                opacity=0.25
-            ))
-            fig.update_layout(
-                height=420,
-                margin=dict(l=10, r=10, t=50, b=10),
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(15,23,42,1)",
-                font=dict(color="#e2e8f0"),
-                xaxis=dict(gridcolor="rgba(148,163,184,0.12)"),
-                yaxis=dict(gridcolor="rgba(148,163,184,0.12)"),
-                title=f"{target_metric.replace('_',' ').title()} Forecast"
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.line_chart(hist.set_index("date")[target_metric])
-            st.line_chart(fc.set_index("date")["forecast"])
-
-        forecast_total = float(fc["forecast"].sum())
-        st.markdown("<div class='section-title' style='margin-top:18px;'>Summary</div>", unsafe_allow_html=True)
-        st.write(f"Projected {target_metric.replace('_',' ')} over next {horizon} days: **{fmt_money(forecast_total)}**.")
-
-        if target_metric == "net_revenue":
-            opp = revenue_recovery_opportunity(last_30)
-            st.success(f"Add **{fmt_money(opp['total'])}** via conversion uplift (+0.30pp) and refund reduction (-1.0pp).")
-    except Exception as e:
-        st.error(f"Forecasting error: {e}")
-
-
-# -----------------------------------------------------------------------------
-# EARLY ACCESS (Waitlist)
-# -----------------------------------------------------------------------------
-with tab_wait:
-    st.markdown("<div class='section-title'>Join Early Access</div>", unsafe_allow_html=True)
-    st.markdown("<div class='section-sub'>Secure pilot pricing and priority onboarding. Limited seats for growth teams targeting $500K+ revenue recovery.</div>", unsafe_allow_html=True)
-
-    with st.form("waitlist_form", clear_on_submit=False):
-        c1, c2 = st.columns(2)
-        with c1:
-            name = st.text_input("Full Name *", max_chars=80)
-            email = st.text_input("Work Email *", max_chars=120, placeholder="you@company.com")
-            role = st.selectbox("Role *", ["Founder/CEO", "CRO/Head of Growth", "Product Lead", "Marketing Lead", "Ops/Finance", "Other"])
-        with c2:
-            company = st.text_input("Company *", max_chars=120)
-            company_size = st.select_slider("Company Size", options=["1-10","11-50","51-200","201-500","501-1000","1000+"], value="51-200")
-            est_lost = st.select_slider("Estimated Lost Revenue / mo", options=["$10K-$50K", "$50K-$100K", "$100K-$250K", "$250K-$500K", "$500K-$1M", "$1M+"], value="$250K-$500K")
-        use_case = st.text_area("Primary Use Case *", placeholder="e.g., Reduce refund leakage, recover abandoned checkouts, improve merchandise availability, etc.", height=100)
-        agree = st.checkbox("I agree to be contacted about Early Access updates.", value=True)
-
-        submitted = st.form_submit_button("Request Early Access 🚀")
-
-    def save_local_csv(row: dict, path: str = "waitlist.csv"):
-        try:
-            exists = os.path.exists(path)
-            df = pd.DataFrame([row])
-            if exists:
-                df_existing = pd.read_csv(path)
-                df = pd.concat([df_existing, df], ignore_index=True)
-            df.to_csv(path, index=False)
-            return True, None
-        except Exception as e:
-            return False, str(e)
-
-    def submit_google_form(row: dict):
-        """If st.secrets contains GOOGLE_FORM_ACTION and GOOGLE_FORM_FIELDS (JSON mapping),
-        submit via POST to Google Form. Returns (ok, message)."""
-        try:
-            form_action = st.secrets.get("GOOGLE_FORM_ACTION", "").strip()
-            fields_json = st.secrets.get("GOOGLE_FORM_FIELDS", "")
-            if not form_action or not fields_json:
-                return False, "Google Form secrets not configured."
-
-            mapping = json.loads(fields_json)  # {"name":"entry.12345", ...}
-            payload = {}
-            for k, v in row.items():
-                if k in mapping:
-                    payload[mapping[k]] = v
-
-            if not REQUESTS_AVAILABLE:
-                return False, "requests library unavailable for HTTP submission."
-
-            resp = requests.post(form_action, data=payload, timeout=8)
-            if resp.status_code in (200, 302):
-                return True, "Submitted to Google Form."
-            return False, f"Google Form submission HTTP {resp.status_code}"
-        except Exception as e:
-            return False, str(e)
-
-    if submitted:
-        missing = []
-        for label, val in [("Full Name", name), ("Work Email", email), ("Company", company), ("Use Case", use_case)]:
-            if not str(val).strip():
-                missing.append(label)
-        if missing or not agree:
-            st.error(f"Please complete required fields: {', '.join(missing)}" + ("" if agree else " and accept contact consent."))
-        else:
-            row = {
-                "timestamp_utc": datetime.utcnow().isoformat(),
-                "name": name.strip(),
-                "email": email.strip(),
-                "role": role,
-                "company": company.strip(),
-                "company_size": company_size,
-                "estimated_lost_revenue": est_lost,
-                "use_case": use_case.strip(),
-                # Optional: include active filters for GTM triage
-                "regions": ",".join(regions_selected),
-                "channels": ",".join(channels_selected),
-            }
-            ok_gf, msg_gf = submit_google_form(row)
-            if ok_gf:
-                st.success("You're on the list! We'll be in touch soon.")
-                st.balloons()
-            else:
-                ok_local, msg_local = save_local_csv(row)
-                if ok_local:
-                    st.success("You're on the list! (Saved locally). We'll be in touch soon.")
-                    st.balloons()
-                else:
-                    st.error(f"Could not save your submission: {msg_gf or msg_local}")
-
-    st.markdown("### Integration Details")
-    st.caption(textwrap.dedent("""
-        Optional: Configure **Google Form** integration via `st.secrets`.
-        - `GOOGLE_FORM_ACTION`: the Google Form `formResponse` action URL.
-        - `GOOGLE_FORM_FIELDS`: JSON mapping from our field keys to Google entry IDs, e.g.:
-            {
-              "name": "entry.1111111",
-              "email": "entry.2222222",
-              "role": "entry.3333333",
-              "company": "entry.4444444",
-              "company_size": "entry.5555555",
-              "estimated_lost_revenue": "entry.6666666",
-              "use_case": "entry.7777777",
-              "regions": "entry.8888888",
-              "channels": "entry.9999999"
-            }
-        If not provided, submissions are safely stored to `waitlist.csv` in the app directory.
-    """))
-
-    st.markdown("### Why Teams Choose This")
-    st.markdown(
-        """
-        - **$500K+ Recovery Potential:** Combine conversion uplift, refund interception, and win-back plays.  
-        - **Anomaly Guardrails:** Detect & react to leakage the same day.  
-        - **Predictive Planning:** 30–60d forecasts to allocate spend and inventory with confidence.  
-        - **Zero Heavy Dependencies:** Runs fast without bulky ML installs; add-ons optional.  
-        """.strip()
-    )
-
-
-# -----------------------------------------------------------------------------
-# Footer
-# -----------------------------------------------------------------------------
-st.divider()
-st.markdown(
-    f"""
-    <div style="display:flex;justify-content:space-between;align-items:center;opacity:.9">
-      <div style="color:#94a3b8;font-size:13px;">
-        © {datetime.utcnow().year} AI BI Dashboard · Built for revenue recovery.
-      </div>
-      <div style="font-size:13px;">
-        <span class="pill">Made with Streamlit</span>
-      </div>
     </div>
-    """,
-    unsafe_allow_html=True
-)
+    """, unsafe_allow_html=True)
+
+def render_metrics_cards(df):
+    """Render KPI metrics cards"""
+    # Calculate metrics
+    total_revenue = df['revenue'].sum()
+    total_customers = df['customers'].sum()
+    avg_deal_size = df['avg_deal_size'].mean()
+    avg_churn = df['churn_rate'].mean()
+    
+    # Previous period comparison (mock data for demo)
+    prev_revenue = total_revenue * 0.92  # 8% growth
+    prev_customers = total_customers * 0.95  # 5% growth
+    prev_deal_size = avg_deal_size * 0.98  # 2% growth
+    prev_churn = avg_churn * 1.1  # 10% improvement (lower is better)
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        delta = ((total_revenue - prev_revenue) / prev_revenue) * 100
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Total Revenue</div>
+            <div class="metric-value">${total_revenue:,.0f}</div>
+            <div class="metric-delta delta-positive">+{delta:.1f}% vs last period</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        delta = ((total_customers - prev_customers) / prev_customers) * 100
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Total Customers</div>
+            <div class="metric-value">{total_customers:,.0f}</div>
+            <div class="metric-delta delta-positive">+{delta:.1f}% vs last period</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col3:
+        delta = ((avg_deal_size - prev_deal_size) / prev_deal_size) * 100
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Avg Deal Size</div>
+            <div class="metric-value">${avg_deal_size:,.0f}</div>
+            <div class="metric-delta delta-positive">+{delta:.1f}% vs last period</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col4:
+        delta = ((prev_churn - avg_churn) / prev_churn) * 100  # Inverted for churn
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Churn Rate</div>
+            <div class="metric-value">{avg_churn:.1%}</div>
+            <div class="metric-delta delta-positive">-{delta:.1f}% vs last period</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 🏠 PAGE: HOME
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def page_home():
+    render_hero()
+    
+    st.markdown("## 🎯 Revenue Recovery Platform Features")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("""
+        <div class="feature-card">
+            <div class="feature-icon">🤖</div>
+            <h3>AI-Powered Analytics</h3>
+            <p>Advanced machine learning algorithms identify revenue leakage patterns and optimization opportunities in real-time.</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown("""
+        <div class="feature-card">
+            <div class="feature-icon">⚡</div>
+            <h3>Instant Insights</h3>
+            <p>Get actionable insights in minutes, not months. Our platform processes millions of data points to surface critical revenue opportunities.</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown("""
+        <div class="feature-card">
+            <div class="feature-icon">💎</div>
+            <h3>Proven ROI</h3>
+            <p>Average clients recover $500K+ in lost revenue within 30 days. Join 1000+ companies maximizing their revenue potential.</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Success Stories
+    st.markdown("## 🏆 Success Stories")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("""
+        <div class="success-box">
+            <h4>🚀 TechCorp Inc.</h4>
+            <p>"Recovered $1.2M in lost revenue within 45 days using AI insights. The platform identified customer segments we were completely missing."</p>
+            <p><strong>— Sarah Chen, Chief Revenue Officer</strong></p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown("""
+        <div class="success-box">
+            <h4>🎯 Global Dynamics</h4>
+            <p>"Anomaly detection caught a $800K revenue leak in our enterprise segment. Without this platform, we would have lost millions."</p>
+            <p><strong>— Michael Rodriguez, VP Sales</strong></p>
+        </div>
+        """, unsafe_allow_html=True)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 📊 PAGE: DASHBOARD
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def page_dashboard(df):
+    st.title("📊 Revenue Analytics Dashboard")
+    st.markdown("### Real-time insights into your revenue performance")
+    
+    # KPI Cards
+    render_metrics_cards(df)
+    
+    st.markdown("---")
+    
+    # Revenue Trend
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.subheader("📈 Revenue Trend Analysis")
+        
+        # Daily revenue trend
+        daily_revenue = df.groupby('date')['revenue'].sum().reset_index()
+        
+        fig = px.line(daily_revenue, x='date', y='revenue',
+                     title="Daily Revenue Trend",
+                     labels={'revenue': 'Revenue ($)', 'date': 'Date'})
+        
+        fig.update_layout(
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='#374151'),
+            title_font_size=16,
+            height=400
+        )
+        fig.update_traces(line_color=BRAND['primary_color'], line_width=3)
+        
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        st.subheader("🎯 Revenue by Segment")
+        
+        segment_revenue = df.groupby('segment')['revenue'].sum().reset_index()
+        segment_revenue = segment_revenue.sort_values('revenue', ascending=False)
+        
+        fig = px.pie(segment_revenue, values='revenue', names='segment',
+                    title="Revenue Distribution",
+                    color_discrete_sequence=px.colors.qualitative.Set3)
+        
+        fig.update_layout(
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='#374151'),
+            height=400
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+    
+    # Channel and Region Analysis
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("📊 Channel Performance")
+        
+        channel_data = df.groupby('channel').agg({
+            'revenue': 'sum',
+            'customers': 'sum'
+        }).reset_index()
+        
+        fig = px.bar(channel_data, x='channel', y='revenue',
+                    title="Revenue by Channel",
+                    color='revenue',
+                    color_continuous_scale='Viridis')
+        
+        fig.update_layout(
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='#374151'),
+            showlegend=False,
+            height=350
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        st.subheader("🌍 Regional Analysis")
+        
+        region_data = df.groupby('region').agg({
+            'revenue': 'sum',
+            'customers': 'sum'
+        }).reset_index()
+        
+        fig = px.bar(region_data, x='region', y='revenue',
+                    title="Revenue by Region",
+                    color='revenue',
+                    color_continuous_scale='Plasma')
+        
+        fig.update_layout(
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='#374151'),
+            showlegend=False,
+            height=350
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 🎯 PAGE: SEGMENTATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def page_segmentation(df):
+    st.title("🎯 Customer Segmentation Analysis")
+    st.markdown("### AI-powered segmentation reveals hidden revenue opportunities")
+    
+    # Perform segmentation
+    segment_data = perform_segmentation(df)
+    
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        st.subheader("💎 Segment Performance")
+        
+        for _, row in segment_data.iterrows():
+            cluster_color = {
+                'High Value': BRAND['success_color'],
+                'Growing': BRAND['warning_color'], 
+                'Opportunity': BRAND['secondary_color']
+            }[row['cluster_name']]
+            
+            st.markdown(f"""
+            <div class="metric-card" style="border-left: 4px solid {cluster_color};">
+                <h4 style="color: {cluster_color};">{row['cluster_name']} - {row['segment']}</h4>
+                <div class="metric-value" style="font-size: 1.5rem;">${row['revenue']:,.0f}</div>
+                <div class="metric-label">Revenue</div>
+                <p><strong>Customers:</strong> {row['customers']:,.0f}</p>
+                <p><strong>Avg Deal Size:</strong> ${row['avg_deal_size']:,.0f}</p>
+                <p><strong>LTV:</strong> ${row['lifetime_value']:,.0f}</p>
+            </div>
+            """, unsafe_allow_html=True)
+    
+    with col2:
+        st.subheader("📊 Segmentation Visualization")
+        
+        # Bubble chart
+        fig = px.scatter(segment_data, 
+                        x='avg_deal_size', 
+                        y='lifetime_value',
+                        size='revenue',
+                        color='cluster_name',
+                        hover_name='segment',
+                        title="Segment Analysis: Deal Size vs Lifetime Value",
+                        labels={
+                            'avg_deal_size': 'Average Deal Size ($)',
+                            'lifetime_value': 'Customer Lifetime Value ($)'
+                        })
+        
+        fig.update_layout(
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='#374151'),
+            height=500
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+    
+    # Revenue Opportunity Analysis
+    st.markdown("---")
+    st.subheader("💰 Revenue Recovery Opportunities")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        opportunity_segments = segment_data[segment_data['cluster_name'] == 'Opportunity']
+        total_opportunity = opportunity_segments['revenue'].sum() * 0.3  # 30% uplift potential
+        
+        st.markdown(f"""
+        <div class="metric-card" style="border: 2px solid {BRAND['warning_color']};">
+            <div class="metric-label">Opportunity Segments</div>
+            <div class="metric-value" style="color: {BRAND['warning_color']};">${total_opportunity:,.0f}</div>
+            <div class="metric-delta">Potential Revenue Recovery</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        high_value_segments = segment_data[segment_data['cluster_name'] == 'High Value']
+        retention_value = high_value_segments['revenue'].sum() * 0.05  # 5% retention improvement
+        
+        st.markdown(f"""
+        <div class="metric-card" style="border: 2px solid {BRAND['success_color']};">
+            <div class="metric-label">High Value Retention</div>
+            <div class="metric-value" style="color: {BRAND['success_color']};">${retention_value:,.0f}</div>
+            <div class="metric-delta">Additional Revenue Potential</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col3:
+        growing_segments = segment_data[segment_data['cluster_name'] == 'Growing']
+        growth_potential = growing_segments['revenue'].sum() * 0.4  # 40% growth potential
+        
+        st.markdown(f"""
+        <div class="metric-card" style="border: 2px solid {BRAND['primary_color']};">
+            <div class="metric-label">Growing Segments</div>
+            <div class="metric-value" style="color: {BRAND['primary_color']};">${growth_potential:,.0f}</div>
+            <div class="metric-delta">Acceleration Opportunity</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 🚨 PAGE: ANOMALY DETECTION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def page_anomaly_detection(df):
+    st.title("🚨 AI Anomaly Detection")
+    st.markdown("### Detect revenue leaks before they become costly problems")
+    
+    # Detect anomalies
+    anomalies = detect_anomalies(df)
+    
+    if not anomalies.empty:
+        # Summary metrics
+        col1, col2, col3, col4 = st.columns(4)
+        
+        total_anomalies = len(anomalies)
+        total_loss = anomalies['potential_loss'].sum()
+        avg_loss_per_day = anomalies['potential_loss'].mean()
+        recent_anomalies = len(anomalies[anomalies['date'] >= (datetime.now() - timedelta(days=7))])
+        
+        with col1:
+            st.markdown(f"""
+            <div class="metric-card" style="border: 2px solid #EF4444;">
+                <div class="metric-label">Total Anomalies Detected</div>
+                <div class="metric-value" style="color: #EF4444;">{total_anomalies}</div>
+                <div class="metric-delta">Last 2 Years</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col2:
+            st.markdown(f"""
+            <div class="metric-card" style="border: 2px solid #F59E0B;">
+                <div class="metric-label">Potential Revenue Loss</div>
+                <div class="metric-value" style="color: #F59E0B;">${total_loss:,.0f}</div>
+                <div class="metric-delta">Recoverable Amount</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col3:
+            st.markdown(f"""
+            <div class="metric-card" style="border: 2px solid #8B5CF6;">
+                <div class="metric-label">Avg Daily Impact</div>
+                <div class="metric-value" style="color: #8B5CF6;">${avg_loss_per_day:,.0f}</div>
+                <div class="metric-delta">Per Anomaly</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col4:
+            st.markdown(f"""
+            <div class="metric-card" style="border: 2px solid #10B981;">
+                <div class="metric-label">Recent Anomalies</div>
+                <div class="metric-value" style="color: #10B981;">{recent_anomalies}</div>
+                <div class="metric-delta">Last 7 Days</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        st.markdown("---")
+        
+        # Anomaly Timeline
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            st.subheader("📈 Anomaly Timeline")
+            
+            # Daily revenue with anomalies highlighted
+            daily_revenue = df.groupby('date')['revenue'].sum().reset_index()
+            
+            fig = go.Figure()
+            
+            # Normal revenue
+            fig.add_trace(go.Scatter(
+                x=daily_revenue['date'],
+                y=daily_revenue['revenue'],
+                mode='lines',
+                name='Daily Revenue',
+                line=dict(color=BRAND['primary_color'], width=2)
+            ))
+            
+            # Anomalies
+            fig.add_trace(go.Scatter(
+                x=anomalies['date'],
+                y=anomalies['revenue'],
+                mode='markers',
+                name='Anomalies',
+                marker=dict(color='red', size=8, symbol='x')
+            ))
+            
+            fig.update_layout(
+                title="Revenue Timeline with Anomaly Detection",
+                xaxis_title="Date",
+                yaxis_title="Revenue ($)",
+                plot_bgcolor='rgba(0,0,0,0)',
+                paper_bgcolor='rgba(0,0,0,0)',
+                font=dict(color='#374151'),
+                height=400
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            st.subheader("🔍 Recent Anomalies")
+            
+            recent_anomalies_df = anomalies.head(10)
+            
+            for _, anomaly in recent_anomalies_df.iterrows():
+                severity = "HIGH" if anomaly['potential_loss'] > 10000 else "MEDIUM" if anomaly['potential_loss'] > 5000 else "LOW"
+                color = "#EF4444" if severity == "HIGH" else "#F59E0B" if severity == "MEDIUM" else "#10B981"
+                
+                st.markdown(f"""
+                <div style="background: white; padding: 1rem; border-radius: 8px; margin: 0.5rem 0; border-left: 4px solid {color};">
+                    <div style="font-weight: bold; color: {color};">{severity} PRIORITY</div>
+                    <div style="font-size: 0.9rem; color: #666;">Date: {anomaly['date'].strftime('%Y-%m-%d')}</div>
+                    <div>Revenue: ${anomaly['revenue']:,.0f}</div>
+                    <div>Potential Loss: ${anomaly['potential_loss']:,.0f}</div>
+                </div>
+                """, unsafe_allow_html=True)
+        
+        # Detailed Anomaly Analysis
+        st.markdown("---")
+        st.subheader("📋 Detailed Anomaly Analysis")
+        
+        # Display anomalies table
+        display_anomalies = anomalies[['date', 'revenue', 'potential_loss', 'anomaly_score']].copy()
+        display_anomalies['date'] = display_anomalies['date'].dt.strftime('%Y-%m-%d')
+        display_anomalies['revenue'] = display_anomalies['revenue'].apply(lambda x: f"${x:,.0f}")
+        display_anomalies['potential_loss'] = display_anomalies['potential_loss'].apply(lambda x: f"${x:,.0f}")
+        display_anomalies['anomaly_score'] = display_anomalies['anomaly_score'].round(3)
+        
+        st.dataframe(
+            display_anomalies.rename(columns={
+                'date': 'Date',
+                'revenue': 'Revenue',
+                'potential_loss': 'Potential Loss',
+                'anomaly_score': 'Anomaly Score'
+            }),
+            use_container_width=True,
+            height=300
+        )
+    
+    else:
+        st.info("No significant anomalies detected in the current dataset.")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 📈 PAGE: FORECASTING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def page_forecasting(df):
+    st.title("📈 AI Revenue Forecasting")
+    st.markdown("### Predict future revenue trends with machine learning")
+    
+    # Generate forecast
+    forecast_df = generate_forecast(df, days=90)
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.subheader("🔮 90-Day Revenue Forecast")
+        
+        # Create forecast visualization
+        fig = go.Figure()
+        
+        # Historical data
+        historical = forecast_df[forecast_df['type'] == 'historical']
+        fig.add_trace(go.Scatter(
+            x=historical['date'],
+            y=historical['forecast'],
+            mode='lines',
+            name='Historical Revenue',
+            line=dict(color=BRAND['primary_color'], width=3)
+        ))
+        
+        # Forecast data
+        forecast = forecast_df[forecast_df['type'] == 'forecast']
+        fig.add_trace(go.Scatter(
+            x=forecast['date'],
+            y=forecast['forecast'],
+            mode='lines',
+            name='Forecast',
+            line=dict(color=BRAND['secondary_color'], width=3, dash='dash')
+        ))
+        
+        # Add confidence bands (simulated)
+        upper_bound = forecast['forecast'] * 1.1
+        lower_bound = forecast['forecast'] * 0.9
+        
+        fig.add_trace(go.Scatter(
+            x=forecast['date'],
+            y=upper_bound,
+            fill=None,
+            mode='lines',
+            line_color='rgba(0,0,0,0)',
+            showlegend=False,
+            name='Upper Bound'
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=forecast['date'],
+            y=lower_bound,
+            fill='tonexty',
+            mode='lines',
+            line_color='rgba(0,0,0,0)',
+            name='Confidence Interval',
+            fillcolor='rgba(236, 72, 153, 0.2)'
+        ))
+        
+        fig.update_layout(
+            title="Revenue Forecast with Confidence Intervals",
+            xaxis_title="Date",
+            yaxis_title="Revenue ($)",
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='#374151'),
+            height=500
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        st.subheader("📊 Forecast Insights")
+        
+        # Calculate forecast metrics
+        historical_avg = historical['forecast'].tail(30).mean()
+        forecast_avg = forecast['forecast'].mean()
+        growth_rate = ((forecast_avg - historical_avg) / historical_avg) * 100
+        
+        total_forecast_revenue = forecast['forecast'].sum()
+        
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">90-Day Revenue Forecast</div>
+            <div class="metric-value">${total_forecast_revenue:,.0f}</div>
+            <div class="metric-delta delta-positive">Next 3 Months</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Predicted Growth Rate</div>
+            <div class="metric-value">{growth_rate:+.1f}%</div>
+            <div class="metric-delta">vs Historical Average</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Key insights
+        st.markdown("### 🎯 Key Insights")
+        
+        if growth_rate > 5:
+            st.markdown("""
+            <div class="success-box">
+                <strong>🚀 Strong Growth Predicted</strong><br>
+                The model predicts strong revenue growth. Consider scaling operations to meet demand.
+            </div>
+            """, unsafe_allow_html=True)
+        elif growth_rate < -5:
+            st.markdown("""
+            <div style="background: #FEE2E2; color: #991B1B; padding: 1rem; border-radius: 8px; margin: 1rem 0;">
+                <strong>⚠️ Declining Trend Detected</strong><br>
+                Revenue decline predicted. Immediate action required to identify and address root causes.
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown("""
+            <div style="background: #FEF3C7; color: #92400E; padding: 1rem; border-radius: 8px; margin: 1rem 0;">
+                <strong>📊 Stable Growth</strong><br>
+                Revenue growth is stable. Look for opportunities to accelerate growth through optimization.
+            </div>
+            """, unsafe_allow_html=True)
+    
+    # Scenario Analysis
+    st.markdown("---")
+    st.subheader("🎲 Scenario Analysis")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("#### 🐻 Conservative Scenario")
+        conservative = total_forecast_revenue * 0.85
+        st.metric("Revenue Forecast", f"${conservative:,.0f}", "-15% adjustment")
+        
+    with col2:
+        st.markdown("#### 📈 Base Case")
+        st.metric("Revenue Forecast", f"${total_forecast_revenue:,.0f}", "Current model prediction")
+        
+    with col3:
+        st.markdown("#### 🚀 Optimistic Scenario")
+        optimistic = total_forecast_revenue * 1.25
+        st.metric("Revenue Forecast", f"${optimistic:,.0f}", "+25% adjustment")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 🚀 PAGE: EARLY ACCESS WAITLIST
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def page_early_access():
+    st.title("🚀 Join the Early Access Program")
+    st.markdown("### Be among the first to experience the future of revenue recovery")
+    
+    # Value proposition
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.markdown("""
+        <div class="waitlist-form">
+            <h3 style="color: #6366F1; text-align: center; margin-bottom: 2rem;">🎯 Exclusive Benefits</h3>
+            
+            <div style="margin: 1.5rem 0;">
+                <h4>💰 Free Revenue Assessment</h4>
+                <p>Get a complimentary $25K analysis of your revenue optimization opportunities</p>
+            </div>
+            
+            <div style="margin: 1.5rem 0;">
+                <h4>⚡ Priority Access</h4>
+                <p>Skip the waitlist and get immediate access to our platform when it launches</p>
+            </div>
+            
+            <div style="margin: 1.5rem 0;">
+                <h4>🎁 50% Launch Discount</h4>
+                <p>Save thousands on your first year subscription - exclusive to early access members</p>
+            </div>
+            
+            <div style="margin: 1.5rem 0;">
+                <h4>🤝 Direct Founder Access</h4>
+                <p>Monthly office hours with our founders to shape the product roadmap</p>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown('<div class="waitlist-form">', unsafe_allow_html=True)
+        st.markdown("#### 📝 Secure Your Spot")
+        
+        # Waitlist Form
+        with st.form("waitlist_form", clear_on_submit=True):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                first_name = st.text_input("First Name *", placeholder="John")
+            with col2:
+                last_name = st.text_input("Last Name *", placeholder="Smith")
+            
+            email = st.text_input("Business Email *", placeholder="john.smith@company.com")
+            company = st.text_input("Company Name *", placeholder="Acme Corporation")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                role = st.selectbox("Your Role *", [
+                    "Select your role...",
+                    "CEO/Founder", 
+                    "Chief Revenue Officer",
+                    "VP Sales",
+                    "VP Marketing", 
+                    "Head of Analytics",
+                    "Director of Operations",
+                    "Other"
+                ])
+            
+            with col2:
+                company_size = st.selectbox("Company Size *", [
+                    "Select size...",
+                    "Startup (1-10 employees)",
+                    "Small (11-50 employees)", 
+                    "Medium (51-200 employees)",
+                    "Large (201-1000 employees)",
+                    "Enterprise (1000+ employees)"
+                ])
+            
+            annual_revenue = st.selectbox("Annual Revenue *", [
+                "Select revenue range...",
+                "Under $1M",
+                "$1M - $10M",
+                "$10M - $50M", 
+                "$50M - $100M",
+                "$100M+"
+            ])
+            
+            pain_points = st.multiselect("Current Revenue Challenges (Select all that apply)", [
+                "Revenue forecasting accuracy",
+                "Customer churn/retention", 
+                "Lead conversion optimization",
+                "Pricing strategy",
+                "Sales process efficiency",
+                "Customer segmentation",
+                "Revenue leakage detection",
+                "Cross-sell/upsell opportunities"
+            ])
+            
+            timeline = st.radio("When do you need a solution?", [
+                "Immediately (within 30 days)",
+                "Soon (1-3 months)",
+                "Planning ahead (3-6 months)",
+                "Exploring options (6+ months)"
+            ])
+            
+            # Interest level
+            st.markdown("**How interested are you in our solution?**")
+            interest = st.slider("", 1, 10, 7, help="1 = Slightly interested, 10 = Extremely interested")
+            
+            # Additional comments
+            comments = st.text_area("Additional Comments (Optional)", 
+                                   placeholder="Tell us about your specific revenue challenges or questions...")
+            
+            # Consent checkboxes
+            consent_updates = st.checkbox("I agree to receive product updates and early access notifications")
+            consent_privacy = st.checkbox("I agree to the Privacy Policy and Terms of Service *")
+            
+            submitted = st.form_submit_button("🚀 Join Early Access Program", 
+                                            type="primary", use_container_width=True)
+            
+            if submitted:
+                # Validation
+                errors = []
+                if not first_name: errors.append("First name is required")
+                if not last_name: errors.append("Last name is required")
+                if not email or "@" not in email: errors.append("Valid email is required")
+                if not company: errors.append("Company name is required")
+                if role == "Select your role...": errors.append("Please select your role")
+                if company_size == "Select size...": errors.append("Please select company size")
+                if annual_revenue == "Select revenue range...": errors.append("Please select revenue range")
+                if not consent_privacy: errors.append("You must agree to the Privacy Policy")
+                
+                if errors:
+                    for error in errors:
+                        st.error(error)
+                else:
+                    # Success message
+                    st.markdown("""
+                    <div class="success-box">
+                        <h4>🎉 Welcome to Early Access!</h4>
+                        <p>Thank you for joining our exclusive early access program. We'll be in touch within 24 hours with your free revenue assessment details.</p>
+                        <p><strong>What's Next:</strong></p>
+                        <ul>
+                            <li>Check your email for confirmation</li>
+                            <li>Our team will contact you within 24 hours</li>
+                            <li>Schedule your free revenue assessment call</li>
+                            <li>Get priority access when we launch</li>
+                        </ul>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Store submission (in real app, this would go to database/CRM)
+                    if 'waitlist_submissions' not in st.session_state:
+                        st.session_state.waitlist_submissions = []
+                    
+                    submission = {
+                        'timestamp': datetime.now().isoformat(),
+                        'name': f"{first_name} {last_name}",
+                        'email': email,
+                        'company': company,
+                        'role': role,
+                        'company_size': company_size,
+                        'annual_revenue': annual_revenue,
+                        'pain_points': pain_points,
+                        'timeline': timeline,
+                        'interest_level': interest,
+                        'comments': comments,
+                        'consent_updates': consent_updates
+                    }
+                    
+                    st.session_state.waitlist_submissions.append(submission)
+                    
+                    # Show balloons for celebration
+                    st.balloons()
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Social proof
+    st.markdown("---")
+    st.markdown("### 🏆 Join 2,500+ Revenue Leaders Already Waiting")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    companies = [
+        ("TechCorp", "500+ employees"),
+        ("Global Dynamics", "1000+ employees"), 
+        ("Revenue Solutions Inc", "200+ employees"),
+        ("Growth Partners", "150+ employees")
+    ]
+    
+    for i, (company, size) in enumerate(companies):
+        with [col1, col2, col3, col4][i]:
+            st.markdown(f"""
+            <div style="text-align: center; padding: 1rem; background: white; border-radius: 10px; margin: 0.5rem 0;">
+                <div style="font-weight: bold; color: #6366F1;">{company}</div>
+                <div style="font-size: 0.9rem; color: #666;">{size}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 🚀 MAIN APPLICATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def main():
+    # Load CSS
+    load_css()
+    
+    # Generate data
+    df = generate_business_data()
+    
+    # Navigation
+    render_navigation()
+    
+    # Route to pages
+    if st.session_state.current_page == 'Home':
+        page_home()
+    elif st.session_state.current_page == 'Dashboard':
+        page_dashboard(df)
+    elif st.session_state.current_page == 'Segmentation':
+        page_segmentation(df)
+    elif st.session_state.current_page == 'Anomaly Detection':
+        page_anomaly_detection(df)
+    elif st.session_state.current_page == 'Forecasting':
+        page_forecasting(df)
+    elif st.session_state.current_page == 'Early Access':
+        page_early_access()
+    
+    # Footer
+    st.markdown("---")
+    st.markdown("""
+    <div style="text-align: center; padding: 2rem; color: #666; background: white; border-radius: 15px; margin-top: 2rem;">
+        <p><strong>AI Revenue Recovery Platform</strong> • Transforming revenue optimization with artificial intelligence</p>
+        <p style="font-size: 0.9rem;">© 2025 Revenue Recovery Inc. All rights reserved. • <a href="#" style="color: #6366F1;">Privacy Policy</a> • <a href="#" style="color: #6366F1;">Terms of Service</a></p>
+    </div>
+    """, unsafe_allow_html=True)
+
+if __name__ == "__main__":
+    main()
