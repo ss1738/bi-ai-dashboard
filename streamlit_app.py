@@ -1,4 +1,4 @@
-# AI Revenue Recovery – Minimal Demo (final)
+# AI Revenue Recovery – Final Demo (with anomalies, forecast, URL sync)
 # Run: streamlit run streamlit_app.py
 
 import streamlit as st
@@ -26,6 +26,12 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# Reduce Altair row cap just in case
+try:
+    alt.data_transformers.disable_max_rows()
+except Exception:
+    pass
+
 # ---------- Query params helpers (new + old Streamlit) ----------
 def read_query_params():
     try:
@@ -44,7 +50,6 @@ def set_query_params(**kwargs):
     except Exception:
         st.experimental_set_query_params(**{k: v for k, v in kwargs.items() if v is not None})
 
-# Read once at top so UTM etc always exist
 _qp = read_query_params()
 utm_source   = (_qp.get("utm_source", "") if isinstance(_qp, dict) else "") or ""
 utm_campaign = (_qp.get("utm_campaign", "") if isinstance(_qp, dict) else "") or ""
@@ -54,6 +59,7 @@ DEFAULT_CHANNELS = ["Direct Sales", "Partner", "Online", "Retail", "Wholesale"]
 DEFAULT_REGIONS  = ["AMER", "EMEA", "APAC"]
 DEFAULT_SEGMENTS = ["Enterprise", "Mid-Market", "SMB", "Startup"]
 
+# ---------- Sample data ----------
 @st.cache_data
 def make_sample_data(seed=17, days=120) -> pd.DataFrame:
     np.random.seed(seed)
@@ -79,6 +85,7 @@ def make_sample_data(seed=17, days=120) -> pd.DataFrame:
 
 def coerce_numeric(s): return pd.to_numeric(s, errors="coerce")
 
+# Flexible CSV loader
 def load_csv(file) -> pd.DataFrame:
     df = pd.read_csv(file)
     cols = {c.lower().strip(): c for c in df.columns}
@@ -110,6 +117,7 @@ def load_csv(file) -> pd.DataFrame:
     df["revenue"] = df["revenue"].clip(lower=0.0)
     return df[["date","region","channel","segment","product","revenue","customers"]]
 
+# ---------- ML helpers ----------
 def detect_anomalies(daily_df: pd.DataFrame) -> pd.DataFrame:
     dd = daily_df.sort_values("date").copy()
     dd["day_of_week"] = dd["date"].dt.dayofweek
@@ -144,32 +152,34 @@ def money(x): return f"${x:,.0f}"
 # ---------- Hero ----------
 st.markdown(
     '<div class="hero" id="recover-500-k-in-lost-revenue-with-ai-powered-insights">'
-    '<h2 style="margin:0;">💰 Recover $500K in Lost Revenue</h2>'
-    '<p style="margin:.2rem 0 0 0;">AI-powered insights for faster growth and fewer leaks.</p></div>',
+    '<h2 style="margin:0;">Recover $500K in Lost Revenue with AI-Powered Insights</h2>'
+    '<p style="margin:.2rem 0 0 0;">Upload your sales data and instantly see how much revenue you can recover, upsell, and forecast with AI.</p></div>',
     unsafe_allow_html=True,
 )
 
-# ---------- Upload ----------
+# ---------- Upload + sample ----------
 with st.expander("Upload your CSV (or use sample data)"):
     up = st.file_uploader("CSV with columns like: date, region, channel, revenue, customers…", type=["csv"])
     if st.button("Download sample CSV"):
         st.download_button("Save sample.csv", make_sample_data().to_csv(index=False),
                            file_name="sample_revenue_data.csv", mime="text/csv")
 
-# Load data
-if up is not None:
-    try:
-        df = load_csv(up)
-        st.success("Data loaded from your CSV ✅")
-    except Exception as e:
-        st.error(f"CSV error: {e}")
-        df = make_sample_data(); st.info("Using sample data instead.")
-else:
-    df = make_sample_data(); st.info("Using sample data. Upload your CSV to analyze your own revenue.")
+# ---------- Load data (with spinner) ----------
+with st.spinner("Analyzing your data..."):
+    if up is not None:
+        try:
+            df = load_csv(up)
+            st.success("Data loaded from your CSV ✅")
+        except Exception as e:
+            st.error(f"CSV error: {e}")
+            df = make_sample_data(); st.info("Using sample data instead.")
+    else:
+        df = make_sample_data(); st.info("Using sample data. Upload your CSV to analyze your own revenue.")
 
 # ---------- Filters with URL sync ----------
 qp = read_query_params()
-regions_q = qp.get("region", ""); channels_q = qp.get("channel", "")
+regions_q  = qp.get("region", "")
+channels_q = qp.get("channel", "")
 if isinstance(regions_q, list):  regions_q  = regions_q[0] if regions_q else ""
 if isinstance(channels_q, list): channels_q = channels_q[0] if channels_q else ""
 
@@ -185,14 +195,15 @@ sel_regions  = split_or_all(regions_q,  all_regions or DEFAULT_REGIONS)
 sel_channels = split_or_all(channels_q, all_channels or DEFAULT_CHANNELS)
 
 st.sidebar.header("Filters")
-regions_sel  = st.sidebar.multiselect("Region",  all_regions,  default=sel_regions)
-channels_sel = st.sidebar.multiselect("Channel", all_channels, default=sel_channels)
+regions_sel  = st.sidebar.multiselect("🌍 Region",  all_regions,  default=sel_regions)
+channels_sel = st.sidebar.multiselect("📊 Channel", all_channels, default=sel_channels)
 set_query_params(region=",".join(regions_sel) if regions_sel else None,
                  channel=",".join(channels_sel) if channels_sel else None)
 
 df_f = df[df["region"].isin(regions_sel) & df["channel"].isin(channels_sel)].copy()
 if df_f.empty:
-    st.warning("No data for the selected filters. Showing all data."); df_f = df.copy()
+    st.warning("No data for the selected filters. Showing all data.")
+    df_f = df.copy()
 
 # ---------- KPIs ----------
 daily = df_f.groupby("date", as_index=False)["revenue"].sum()
@@ -228,15 +239,15 @@ with c3:
 st.subheader("💡 Top 3 Recovery Moves")
 moves = []
 if potential_loss > 0:
-    moves.append(f"Plug anomaly days → recover about {money(potential_loss)} (check pricing/promos, billing, ops).")
-if upsell_potential > 0:
+    moves.append(f"Plug anomaly days → recover ~{money(potential_loss)} (pricing/promos, billing, ops).")
+if upsell_potential > 0 and not by_channel.empty:
     worst = by_channel.nsmallest(1, "avg_deal_size")
     if not worst.empty:
-        moves.append(f"Lift {worst['channel'].iloc[0]} deal size to 75th-pct → unlock ~{money(upsell_potential)} (bundles/add-ons).")
+        moves.append(f"Lift {worst['channel'].iloc[0]} avg deal size to 75th-pct → unlock ~{money(upsell_potential)}.")
 if forecast_uplift > 0:
-    moves.append(f"Prep capacity & promos for next 30 days → capture ~{money(forecast_uplift)} uplift.")
+    moves.append(f"Prep capacity & promos for next 30 days → capture ~{money(forecast_uplift)}.")
 if not moves:
-    moves = ["Data looks healthy—focus on targeted retention & upsell."]
+    moves = ["🎉 No major gaps detected — focus on targeted retention & upsell."]
 for i, m in enumerate(moves, 1):
     st.markdown(f"- **{i}. {m}**")
 
@@ -258,6 +269,7 @@ else:
             )
             st.altair_chart((line + pts).properties(height=340), use_container_width=True)
         else:
+            st.info("🎉 No revenue anomalies detected in the selected period.")
             st.altair_chart(line.properties(height=340), use_container_width=True)
     with b:
         st.subheader("Revenue by Channel")
@@ -279,6 +291,8 @@ else:
     st.altair_chart(chart2, use_container_width=True)
 
     st.subheader("30-Day Revenue Forecast")
+    if fc[fc["type"]=="Forecast"].empty:
+        st.info("Not enough history to forecast yet. Add more data to unlock forecasts.")
     chart3 = alt.Chart(fc).mark_line(point=True).encode(
         x=alt.X("date:T", title="Date"),
         y=alt.Y("value:Q", title="Revenue ($)", axis=alt.Axis(format="~s")),
@@ -295,7 +309,7 @@ with st.form("waitlist"):
     with c1: name  = st.text_input("Full name")
     with c2: email = st.text_input("Work email")
     use_case = st.text_input("What do you want to recover or optimize?")
-    submitted = st.form_submit_button("Request access")
+    submitted = st.form_submit_button("Request Access")
     if submitted:
         if not name or not email:
             st.error("Please add name and email.")
