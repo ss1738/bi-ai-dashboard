@@ -35,6 +35,10 @@ def parse_query_params():
         return st.query_params  # Streamlit ≥ 1.32
     except Exception:
         return st.experimental_get_query_params()
+        utm_source = qp.get("utm_source", "")
+utm_campaign = qp.get("utm_campaign", "")
+# Use in st.caption somewhere:
+st.caption(f"utm_source={utm_source}  utm_campaign={utm_campaign}")
 
 def set_query_params(**kwargs):
     try:
