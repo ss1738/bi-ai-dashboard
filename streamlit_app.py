@@ -375,16 +375,38 @@ def automl_train(df, target_col, framework="flaml"):
     except Exception as e:
         return f"AutoML error: {e}", {}
 
-# ----- DL demos --------------------------------------------------------
-class LSTMModel(nn.Module):
-    def __init__(self, input_size=1, hidden_size=32, num_layers=2, output_size=1):
-        super().__init__()
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
-        self.fc = nn.Linear(hidden_size, output_size)
-    def forward(self, x):
-        out,_ = self.lstm(x)
-        return self.fc(out[:, -1, :])
+# ----- DL demos (guard definitions to avoid NameError when PyTorch/TF missing) -----
+if TORCH_OK:
+    import torch.nn as _nn  # local alias to avoid global NameError if torch is absent
 
+    class LSTMModel(_nn.Module):
+        def __init__(self, input_size=1, hidden_size=32, num_layers=2, output_size=1):
+            super().__init__()
+            self.lstm = _nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+            self.fc = _nn.Linear(hidden_size, output_size)
+        def forward(self, x):
+            out,_ = self.lstm(x)
+            return self.fc(out[:, -1, :])
+
+    def train_lstm_pytorch(series, epochs=3):
+        try:
+            torch.set_num_threads(2)
+        except Exception:
+            pass
+        if len(series) < 5:
+            return None, None
+        data = torch.tensor(series.values, dtype=torch.float32).view(-1,1,1)
+        X, y = data[:-1], data[1:]
+        model = LSTMModel()
+        criterion = _nn.MSELoss()
+        opt = optim.Adam(model.parameters(), lr=0.01)
+        for _ in range(epochs):
+            opt.zero_grad(); out = model(X); loss = criterion(out, y); loss.backward(); opt.step()
+        return model, float(loss.item())
+else:
+    # Safe stubs when PyTorch is unavailable
+    def train_lstm_pytorch(series, epochs=3):
+        return None, None
 def train_lstm_pytorch(series, epochs=3):
     if not TORCH_OK or len(series) < 5: return None, None
     try:
