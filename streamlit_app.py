@@ -407,22 +407,6 @@ else:
     # Safe stubs when PyTorch is unavailable
     def train_lstm_pytorch(series, epochs=3):
         return None, None
-def train_lstm_pytorch(series, epochs=3):
-    if not TORCH_OK or len(series) < 5: return None, None
-    try:
-        torch.set_num_threads(2)
-    except Exception:
-        pass
-    data = torch.tensor(series.values, dtype=torch.float32).view(-1,1,1)
-    X, y = data[:-1], data[1:]
-    model = LSTMModel()
-    criterion = nn.MSELoss(); opt = optim.Adam(model.parameters(), lr=0.01)
-    for _ in range(epochs):
-        opt.zero_grad(); out = model(X); loss = criterion(out, y); loss.backward(); opt.step()
-    return model, float(loss.item())
-
-def train_tf_dense(df):
-    if not TF_OK or len(df) < 10: return None, None
     X = df[["revenue","customers"]].values
     y = (df["revenue"] > df["revenue"].median()).astype(int).values
     model = keras.Sequential([
