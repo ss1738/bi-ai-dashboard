@@ -1,7 +1,10 @@
-# AI Revenue Recovery – Fast & Stable Edition (Apply Filters + Turbo Mode + Caching)
-# Drop-in replacement for streamlit_app.py
+# AI Revenue Recovery – All-in-One Edition (fast + RAG + Plotly + AutoML)
+# Run: streamlit run streamlit_app.py
+#
+# Optional deps are auto-detected and gracefully skipped if missing.
+# See a suggested requirements block at the bottom of this file header.
 
-# ---------- Limit CPU threads early (prevents thrashing on small instances) ----------
+# ----- Limit CPU threads early to avoid thrashing on shared runners -----
 import os as _os
 _os.environ.setdefault("NUMEXPR_MAX_THREADS", "4")
 _os.environ.setdefault("OMP_NUM_THREADS", "4")
@@ -9,70 +12,81 @@ _os.environ.setdefault("OPENBLAS_NUM_THREADS", "4")
 _os.environ.setdefault("MKL_NUM_THREADS", "4")
 _os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "4")
 
-# ---------- Imports ----------
-import os, io, re, uuid, sqlite3
+# ----- Imports (with feature flags) ------------------------------------
+import os, io, re, uuid, json, sqlite3, zipfile
 from datetime import datetime, timedelta
 import streamlit as st
 import pandas as pd
 import numpy as np
+
+# Plotting (optional Plotly)
+PLOTLY_OK = True
+try:
+    import plotly.express as px
+    import plotly.graph_objects as go
+except Exception:
+    PLOTLY_OK = False
 import altair as alt
+
+# ML
 from sklearn.ensemble import IsolationForest, GradientBoostingClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 
-# Optional libs with graceful fallbacks (never crash if missing)
-PROPHET_OK = XGB_OK = LGB_OK = TORCH_OK = TF_OK = BS4_OK = PDF_READER_OK = FPDF_OK = True
+PROPHET_OK = XGB_OK = LGB_OK = TORCH_OK = TF_OK = BS4_OK = PDF_READER_OK = FPDF_OK = FAISS_OK = SBERT_OK = FLAML_OK = PYCARET_OK = True
 try:
     from prophet import Prophet
-except Exception:
-    PROPHET_OK = False
+except Exception: PROPHET_OK = False
 try:
     import xgboost as xgb
-except Exception:
-    XGB_OK = False
+except Exception: XGB_OK = False
 try:
     import lightgbm as lgb
-except Exception:
-    LGB_OK = False
+except Exception: LGB_OK = False
 try:
     import torch, torch.nn as nn, torch.optim as optim
-except Exception:
-    TORCH_OK = False
+except Exception: TORCH_OK = False
 try:
     import tensorflow as tf
     from tensorflow import keras
     from tensorflow.keras import layers
-except Exception:
-    TF_OK = False
+except Exception: TF_OK = False
 try:
     import requests
     from bs4 import BeautifulSoup
-except Exception:
-    BS4_OK = False
+except Exception: BS4_OK = False
 try:
     from PyPDF2 import PdfReader
-except Exception:
-    PDF_READER_OK = False
+except Exception: PDF_READER_OK = False
 try:
     from fpdf import FPDF
+except Exception: FPDF_OK = False
+# Vector RAG
+try:
+    import faiss
+except Exception: FAISS_OK = False
+try:
+    from sentence_transformers import SentenceTransformer
+except Exception: SBERT_OK = False
+# AutoML
+try:
+    from flaml import AutoML
+except Exception: FLAML_OK = False
+try:
+    from pycaret.classification import setup as pycaret_setup, compare_models, pull as pycaret_pull
 except Exception:
-    FPDF_OK = False
+    PYCARET_OK = False
 
 try:
     alt.data_transformers.disable_max_rows()
 except Exception:
     pass
 
-# ---------- Page config ----------
+# ----- Page config & Theme --------------------------------------------
 st.set_page_config(page_title="AI Revenue Recovery", page_icon="💰", layout="wide")
+if "theme" not in st.session_state: st.session_state.theme = "Light"
+THEME = st.session_state.theme; DARK = THEME == "Dark"
 
-# Theme toggle
-if "theme" not in st.session_state:
-    st.session_state.theme = "Light"
-THEME = st.session_state.theme
-DARK = THEME == "Dark"
-
-# Simple, safe palette
 PALETTE = {
     "bg": "#FFFFFF" if not DARK else "#0F172A",
     "text": "#0F172A" if not DARK else "#E5E7EB",
@@ -82,70 +96,56 @@ PALETTE = {
     "danger": "#EF4444",
     "muted": "#6B7280" if not DARK else "#9CA3AF",
 }
+st.markdown(f"""
+<style>
+.stApp {{ background: {PALETTE['bg']}; }}
+.app-title {{ color:{PALETTE['text']}; }}
+.hero {{
+  padding:1rem 1.2rem;border-radius:14px;background:linear-gradient(135deg,#6366F1,#EC4899);
+  color:#fff;box-shadow:0 6px 24px rgba(0,0,0,.12);
+}}
+.card {{
+  background:{PALETTE['card_bg']};border:1px solid {PALETTE['card_border']};
+  border-radius:12px;padding:.9rem 1rem;
+}}
+.kpi-title {{ font-size:.86rem;color:{PALETTE['muted']};font-weight:600;margin-bottom:.2rem; }}
+.kpi-value {{ font-size:1.5rem;font-weight:800;color:{PALETTE['text']}; }}
+.small {{ color:{PALETTE['muted']};font-size:.85rem; }}
+.divider {{ height:1px;background:{PALETTE['card_border']};margin:1rem 0; }}
+</style>
+""", unsafe_allow_html=True)
 
-st.markdown(
-    f"""
-    <style>
-    .stApp {{ background: {PALETTE['bg']}; }}
-    .app-title {{ color:{PALETTE['text']}; }}
-    .hero {{
-        padding: 1rem 1.2rem; border-radius: 14px;
-        background: linear-gradient(135deg, #6366F1, #EC4899); color:#fff;
-        box-shadow: 0 6px 24px rgba(0,0,0,.12);
-    }}
-    .card {{
-        background:{PALETTE['card_bg']}; border:1px solid {PALETTE['card_border']};
-        border-radius:12px; padding:.9rem 1rem;
-    }}
-    .kpi-title {{ font-size:.86rem; color:{PALETTE['muted']}; font-weight:600; margin-bottom:.2rem; }}
-    .kpi-value {{ font-size:1.5rem; font-weight:800; color:{PALETTE['text']}; }}
-    .small {{ color:{PALETTE['muted']}; font-size:.85rem; }}
-    .divider {{ height:1px; background:{PALETTE['card_border']}; margin:1rem 0; }}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-# ---------- Utils ----------
+# ----- Utils -----------------------------------------------------------
 DB_PATH = "sales.db"
-
-def money(x):
-    try:
-        return f"${float(x):,.0f}"
-    except Exception:
-        return "$0"
+def money(x): 
+    try: return f"${float(x):,.0f}"
+    except: return "$0"
 
 def read_query_params():
-    try:
-        return st.query_params  # Streamlit >=1.32
-    except Exception:
-        return st.experimental_get_query_params()
+    try: return st.query_params
+    except Exception: return st.experimental_get_query_params()
 
 def set_query_params(**kwargs):
-    """Write URL query params once per apply, not on every keystroke."""
     try:
         qp = st.query_params
-        for k, v in kwargs.items():
+        for k,v in kwargs.items():
             if v is None:
                 if k in qp: del qp[k]
             else:
                 qp[k] = v
     except Exception:
-        st.experimental_set_query_params(**{k: v for k, v in kwargs.items() if v is not None})
+        st.experimental_set_query_params(**{k:v for k,v in kwargs.items() if v is not None})
 
-# ---------- Database ----------
+# ----- DB --------------------------------------------------------------
 def init_db():
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-      CREATE TABLE IF NOT EXISTS sales_data (
-        date TEXT, region TEXT, channel TEXT, segment TEXT, product TEXT,
-        revenue REAL, customers INTEGER
-      )
-    """)
+    conn.execute("""CREATE TABLE IF NOT EXISTS sales_data(
+      date TEXT, region TEXT, channel TEXT, segment TEXT, product TEXT, revenue REAL, customers INTEGER
+    )""")
     conn.close()
 
 @st.cache_data(show_spinner=False)
-def load_from_db_cached(db_path: str):
+def load_from_db_cached(db_path: str) -> pd.DataFrame:
     if not os.path.exists(db_path):
         return pd.DataFrame(columns=["date","region","channel","segment","product","revenue","customers"])
     conn = sqlite3.connect(db_path)
@@ -153,10 +153,8 @@ def load_from_db_cached(db_path: str):
     conn.close()
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.dropna(subset=["date"]).copy()
-    # compact types
     for c in ["region","channel","segment","product"]:
-        if c in df.columns:
-            df[c] = df[c].astype("category")
+        if c in df: df[c] = df[c].astype("category")
     if "revenue" in df: df["revenue"] = df["revenue"].astype("float32")
     if "customers" in df: df["customers"] = df["customers"].astype("int32")
     return df
@@ -166,7 +164,7 @@ def save_to_db(df):
     df.to_sql("sales_data", conn, if_exists="replace", index=False)
     conn.close()
 
-# ---------- CSV Loader ----------
+# ----- CSV Loader ------------------------------------------------------
 def coerce_numeric(s): return pd.to_numeric(s, errors="coerce")
 
 def load_csv(file) -> pd.DataFrame:
@@ -197,18 +195,16 @@ def load_csv(file) -> pd.DataFrame:
         df["customers"] = np.maximum(1, (df["revenue"]/np.maximum(1.0, df["revenue"].median()/5)).round()).astype(int)
     df = df.dropna(subset=["date","revenue"]).copy()
     df["revenue"] = df["revenue"].clip(lower=0)
-    # compact
     for c in ["region","channel","segment","product"]:
         df[c] = df[c].astype("category")
     df["revenue"] = df["revenue"].astype("float32")
     df["customers"] = df["customers"].astype("int32")
     return df[["date","region","channel","segment","product","revenue","customers"]]
 
-# ---------- ML: Anomalies + Forecast ----------
+# ----- ML: Anomalies + Forecast ---------------------------------------
 def detect_anomalies(daily_df: pd.DataFrame) -> pd.DataFrame:
     dd = daily_df.sort_values("date").copy()
-    if dd.empty or dd["revenue"].isna().all():
-        return dd.head(0).copy()
+    if dd.empty or dd["revenue"].isna().all(): return dd.head(0).copy()
     dd["day_of_week"] = dd["date"].dt.dayofweek
     dd["month"] = dd["date"].dt.month
     dd["revenue_lag1"] = dd["revenue"].shift(1)
@@ -257,51 +253,27 @@ def forecast_fallback(daily: pd.DataFrame, days=30) -> pd.DataFrame:
     fc = pd.DataFrame({"date":future_dates,"value":pred,"type":"Forecast"})
     return pd.concat([hist, fc], ignore_index=True)
 
-# ---------- ML Models (cached, train-once per dataset) ----------
-def _df_version(df: pd.DataFrame):
-    """A small version token so cache invalidates only when dataset really changes."""
-    if df.empty:
-        return (0, 0, 0)
-    return (len(df), int(pd.to_datetime(df["date"]).min().timestamp()), int(pd.to_datetime(df["date"]).max().timestamp()))
-
-@st.cache_resource(show_spinner=False)
-def train_global_models(df_version, df_all: pd.DataFrame):
-    """Train once per dataset (churn/upsell)."""
-    base = df_all.copy()
-    base["avg_rev_per_cust"] = base["revenue"]/base["customers"].replace(0,1)
-    # Churn
-    base["churn_flag"] = (base["revenue"] < base["revenue"].median()).astype(int)
-    Xc = base[["revenue","customers","avg_rev_per_cust"]]; yc = base["churn_flag"]
-    churn_model = None; churn_acc = None
-    if len(base) >= 10 and yc.nunique() >= 2:
-        Xtr,Xte,ytr,yte = train_test_split(Xc,yc,test_size=0.2,random_state=42)
-        if XGB_OK:
-            try:
-                churn_model = xgb.XGBClassifier(eval_metric="logloss", use_label_encoder=False).fit(Xtr,ytr)
-            except Exception:
-                churn_model = GradientBoostingClassifier().fit(Xtr,ytr)
+# ----- AutoML (optional) ----------------------------------------------
+def automl_train(df, target_col, framework="flaml"):
+    """Return (model_info:str, details:dict). Uses FLAML or PyCaret if available."""
+    try:
+        X = df.drop(columns=[target_col])
+        y = df[target_col]
+        if framework == "flaml" and FLAML_OK:
+            automl = AutoML()
+            automl.fit(X_train=X, y_train=y, time_budget=30, task="classification", log_file_name="automl.log", verbose=0)
+            return f"FLAML best: {automl.best_estimator}", {"val_score": float(automl.best_loss) if automl.best_loss else None}
+        elif framework == "pycaret" and PYCARET_OK:
+            s = pycaret_setup(pd.concat([X, y], axis=1), target=target_col, session_id=42, silent=True, verbose=False)
+            best = compare_models()
+            df_res = pycaret_pull()
+            return f"PyCaret best: {str(best)[:60]}...", {"leaderboard_top3": df_res.head(3).to_dict(orient="records")}
         else:
-            churn_model = GradientBoostingClassifier().fit(Xtr,ytr)
-        churn_acc = accuracy_score(yte, churn_model.predict(Xte))
+            return "AutoML not available", {}
+    except Exception as e:
+        return f"AutoML error: {e}", {}
 
-    # Upsell
-    base["upsell_flag"] = (base["avg_rev_per_cust"] > base["avg_rev_per_cust"].median()).astype(int)
-    Xu = base[["revenue","customers","avg_rev_per_cust"]]; yu = base["upsell_flag"]
-    upsell_model = None; upsell_acc = None
-    if len(base) >= 10 and yu.nunique() >= 2:
-        Xtr,Xte,ytr,yte = train_test_split(Xu,yu,test_size=0.2,random_state=42)
-        if LGB_OK:
-            try:
-                upsell_model = lgb.LGBMClassifier().fit(Xtr,ytr)
-            except Exception:
-                upsell_model = GradientBoostingClassifier().fit(Xtr,ytr)
-        else:
-            upsell_model = GradientBoostingClassifier().fit(Xtr,ytr)
-        upsell_acc = accuracy_score(yte, upsell_model.predict(Xte))
-
-    return (churn_model, churn_acc), (upsell_model, upsell_acc)
-
-# ---------- DL demos ----------
+# ----- DL demos --------------------------------------------------------
 class LSTMModel(nn.Module):
     def __init__(self, input_size=1, hidden_size=32, num_layers=2, output_size=1):
         super().__init__()
@@ -313,11 +285,10 @@ class LSTMModel(nn.Module):
 
 def train_lstm_pytorch(series, epochs=3):
     if not TORCH_OK or len(series) < 5: return None, None
-    if "torch" in globals():
-        try:
-            torch.set_num_threads(2)
-        except Exception:
-            pass
+    try:
+        torch.set_num_threads(2)
+    except Exception:
+        pass
     data = torch.tensor(series.values, dtype=torch.float32).view(-1,1,1)
     X, y = data[:-1], data[1:]
     model = LSTMModel()
@@ -340,30 +311,40 @@ def train_tf_dense(df):
     _, acc = model.evaluate(X, y, verbose=0)
     return model, float(acc)
 
-# ---------- PDF export ----------
+# ----- PDF export ------------------------------------------------------
 def export_kpi_pdf(kpis, insights):
-    if not FPDF_OK:
-        return None
+    if not FPDF_OK: return None
     pdf = FPDF(); pdf.add_page()
-    pdf.set_font("Arial", "B", 16); pdf.cell(200,10,"AI Revenue Recovery Report",ln=True,align="C")
+    pdf.set_font("Arial","B",16); pdf.cell(200,10,"AI Revenue Recovery Report",ln=True,align="C")
     pdf.set_font("Arial","",12); pdf.ln(6); pdf.cell(200,8,"KPIs",ln=True)
     for k,v in kpis.items(): pdf.cell(200,8,f"{k}: {v}",ln=True)
     pdf.ln(6); pdf.cell(200,8,"Insights",ln=True)
     for ins in insights: pdf.multi_cell(0,8,f"- {ins}")
     return pdf.output(dest="S").encode("latin-1")
 
-# ---------- Header + Theme toggle ----------
+# ----- Slack notify (optional) ----------------------------------------
+def slack_notify(text: str):
+    url = os.environ.get("SLACK_WEBHOOK_URL")
+    if not url or not BS4_OK:  # requests flag piggybacks in BS4_OK
+        return False
+    try:
+        r = requests.post(url, json={"text": text}, timeout=5)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+# ===== HEADER ==========================================================
 left, right = st.columns([0.75, 0.25])
 with left:
     st.markdown("<h2 class='app-title'>💰 AI Revenue Recovery</h2>", unsafe_allow_html=True)
-    st.markdown("<div class='hero'>Upload your sales CSV → Filter → See KPIs, anomalies, forecast, ML/DL, export, and KB search.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='hero'>Upload your sales CSV → Filter → KPIs, anomalies, forecast, ML/DL, RAG search, exports.</div>", unsafe_allow_html=True)
 with right:
     mode = st.radio("Theme", ["Light","Dark"], horizontal=True, index=(1 if DARK else 0), key="theme_radio")
     if mode != st.session_state.theme:
         st.session_state.theme = mode
         st.rerun()
 
-# ---------- Upload / Load data ----------
+# ===== UPLOAD / LOAD ===================================================
 init_db()
 with st.expander("📂 Upload CSV (or keep previous data)", expanded=False):
     up = st.file_uploader("CSV columns: date, region, channel, segment, product, revenue, customers", type=["csv"])
@@ -371,9 +352,9 @@ with st.expander("📂 Upload CSV (or keep previous data)", expanded=False):
     with c1:
         if up is not None:
             try:
-                df_u = load_csv(up)
-                save_to_db(df_u)
+                df_u = load_csv(up); save_to_db(df_u)
                 st.success("✅ Data uploaded & saved")
+                slack_notify("New CSV uploaded to AI Revenue Recovery.")
             except Exception as e:
                 st.error(f"CSV error: {e}")
     with c2:
@@ -387,10 +368,9 @@ if df.empty:
     st.warning("No dataset found. Please upload a CSV.")
     st.stop()
 
-# ---------- Filters (Apply button) + URL sync + Turbo toggles ----------
+# ===== FILTERS (Apply) + TOGGLES ======================================
 df["date"] = pd.to_datetime(df["date"], errors="coerce")
 df = df.dropna(subset=["date"]).copy()
-
 min_ts, max_ts = pd.to_datetime(df["date"].min()), pd.to_datetime(df["date"].max())
 default_end = max_ts.date()
 default_start = max((min_ts + pd.Timedelta(days=0)).date(), (max_ts - pd.Timedelta(days=60)).date())
@@ -426,12 +406,14 @@ with st.sidebar:
     date_range = st.date_input("📅 Date Range", value=(start_default, end_default),
                                min_value=min_ts.date(), max_value=max_ts.date())
     st.markdown("---")
+    use_plotly = st.toggle("📈 Use Plotly charts", value=PLOTLY_OK)
     turbo = st.toggle("⚡ Turbo mode (skip heavy models)", value=True)
     run_forecast = st.toggle("🔮 Forecast (Prophet if available)", value=not turbo)
     run_ml = st.toggle("🤖 Train ML (Churn/Upsell)", value=not turbo)
+    run_automl = st.toggle("🧪 AutoML (FLAML/PyCaret)", value=False)
     apply = st.button("✅ Apply filters")
 
-# Keep last applied filters; recompute only when Apply is pressed (or first run)
+# persist selection only on Apply
 if "applied_filters" not in st.session_state or apply:
     st.session_state.applied_filters = {
         "regions": regions_sel,
@@ -440,16 +422,16 @@ if "applied_filters" not in st.session_state or apply:
         "products": products_sel,
         "start": pd.to_datetime(date_range[0]),
         "end": pd.to_datetime(date_range[1]),
-        "turbo": turbo, "run_forecast": run_forecast, "run_ml": run_ml
+        "turbo": turbo, "run_forecast": run_forecast, "run_ml": run_ml,
+        "use_plotly": use_plotly, "run_automl": run_automl
     }
 
 cfg = st.session_state.applied_filters
 regions_sel, channels_sel = cfg["regions"], cfg["channels"]
 segments_sel, products_sel = cfg["segments"], cfg["products"]
 start_date, end_date = cfg["start"], cfg["end"]
-turbo, run_forecast, run_ml = cfg["turbo"], cfg["run_forecast"], cfg["run_ml"]
+turbo, run_forecast, run_ml, use_plotly, run_automl = cfg["turbo"], cfg["run_forecast"], cfg["run_ml"], cfg["use_plotly"], cfg["run_automl"]
 
-# Write URL once per apply
 set_query_params(
     region=",".join(regions_sel), channel=",".join(channels_sel),
     segment=",".join(segments_sel), product=",".join(products_sel),
@@ -468,31 +450,28 @@ if filtered.empty:
     st.warning("No rows match these filters. Showing all data for context.")
     filtered = df.copy()
 
-# ---------- Downsample helper for smooth charts ----------
+# ===== Downsample for smoother charts =================================
 def downsample_daily(daily: pd.DataFrame, max_points=2000):
-    if len(daily) <= max_points:
-        return daily
+    if len(daily) <= max_points: return daily
     idx = np.linspace(0, len(daily)-1, max_points).astype(int)
     return daily.iloc[idx]
 
-# ---------- KPIs (cached by filtered hash) ----------
+# ===== KPIs (cached) ==================================================
 @st.cache_data(show_spinner=False)
 def compute_kpis(filtered_df: pd.DataFrame):
     daily = filtered_df.groupby("date", as_index=False)["revenue"].sum().sort_values("date")
     anoms = detect_anomalies(daily)
     avg_day_rev = float(daily["revenue"].mean()) if not daily.empty else 0.0
     potential_loss = float(max(0.0, (avg_day_rev*len(anoms) - anoms["revenue"].sum()) if not anoms.empty else 0.0))
-
     by_channel = filtered_df.groupby("channel", as_index=False).agg(revenue=("revenue","sum"), customers=("customers","sum"))
     by_channel["avg_deal_size"] = by_channel["revenue"] / by_channel["customers"].clip(lower=1)
     target_ads = float(by_channel["avg_deal_size"].quantile(0.75)) if not by_channel.empty else 0.0
     upsell_potential = float(((target_ads - by_channel["avg_deal_size"]).clip(lower=0) * by_channel["customers"]).sum()) if target_ads>0 else 0.0
-
     return daily, anoms, avg_day_rev, potential_loss, by_channel, upsell_potential
 
 daily, anoms, avg_day_rev, potential_loss, by_channel, upsell_potential = compute_kpis(filtered)
 
-# Forecast (guarded by toggle; Prophet optional)
+# Forecast (guarded)
 if run_forecast and PROPHET_OK:
     fc = forecast_prophet(daily, 30)
 else:
@@ -502,7 +481,7 @@ future_sum = float(fc[fc["type"]=="Forecast"]["value"].sum()) if not fc.empty el
 baseline_mean = float(daily["revenue"].tail(30).mean() if len(daily)>=30 else (daily["revenue"].mean() if not daily.empty else 0.0))
 forecast_uplift = float(max(0.0, future_sum - baseline_mean*30))
 
-# Comparisons
+# 30d comps
 today = daily["date"].max() if not daily.empty else pd.Timestamp.today().normalize()
 last_30_start = today - pd.Timedelta(days=29)
 prev_30_start = today - pd.Timedelta(days=59)
@@ -510,7 +489,6 @@ prev_30_end   = today - pd.Timedelta(days=30)
 last30 = daily[(daily["date"] >= last_30_start) & (daily["date"] <= today)]
 prev30 = daily[(daily["date"] >= prev_30_start) & (daily["date"] <= prev_30_end)]
 def pct_delta(cur, prev): return 0.0 if (prev is None or prev==0 or np.isnan(prev)) else 100.0*(cur-prev)/prev
-
 total_rev_30 = float(last30["revenue"].sum()) if not last30.empty else float(daily["revenue"].sum() if not daily.empty else 0.0)
 total_rev_prev = float(prev30["revenue"].sum()) if not prev30.empty else None
 delta_total_rev = pct_delta(total_rev_30, total_rev_prev)
@@ -522,7 +500,7 @@ top_ch = by_channel.sort_values("revenue", ascending=False).head(1)
 top_channel_name = (top_ch["channel"].iloc[0] if not top_ch.empty else "—")
 top_channel_share = float(top_ch["revenue"].iloc[0] / max(1.0, by_channel["revenue"].sum()) * 100.0) if not top_ch.empty else 0.0
 
-# ---------- UI: KPIs ----------
+# ===== KPI cards ======================================================
 c1, c2, c3, c4 = st.columns(4)
 with c1:
     st.markdown(f"<div class='card'><div class='kpi-title'>Total Revenue (30d)</div><div class='kpi-value'>{money(total_rev_30)}</div><div class='small'>{delta_total_rev:+.1f}% vs prev</div></div>", unsafe_allow_html=True)
@@ -541,7 +519,7 @@ with c7: st.markdown(f"<div class='card'><div class='kpi-title'>30d Forecast Upl
 
 st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 
-# ---------- Recovery Moves ----------
+# ===== Recovery Moves =================================================
 st.subheader("💡 Top Recovery Moves")
 moves=[]
 if potential_loss>0: moves.append(f"Plug anomaly days → recover ~{money(potential_loss)} (pricing/promos, billing, ops).")
@@ -551,82 +529,145 @@ if upsell_potential>0 and not by_channel.empty:
 if forecast_uplift>0: moves.append(f"Prep capacity & promos for next 30 days → capture ~{money(forecast_uplift)}.")
 if not moves: moves=["🎉 No major gaps detected — focus on targeted retention & upsell."]
 st.markdown("\n".join([f"- **{i}. {m}**" for i,m in enumerate(moves,1)]))
-
 st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 
-# ---------- Charts (downsampled for speed) ----------
+# ===== Charts (Plotly toggle) =========================================
 a, b = st.columns([2,1])
 with a:
     st.subheader("Revenue Trend & Anomalies")
     daily_plot = downsample_daily(daily)
-    base = alt.Chart(daily_plot).encode(x=alt.X("date:T", title="Date"))
-    line = base.mark_line(color=PALETTE["primary"]).encode(
-        y=alt.Y("revenue:Q", title="Revenue ($)", axis=alt.Axis(format="~s")),
-        tooltip=[alt.Tooltip("date:T"), alt.Tooltip("revenue:Q", format=",.0f")]
-    )
-    if not anoms.empty:
-        anoms_plot = anoms.merge(daily, on=["date","revenue"], how="inner")
-        pts = alt.Chart(anoms_plot).mark_point(size=85, filled=True, color=PALETTE["danger"]).encode(
-            x="date:T", y="revenue:Q", tooltip=["date:T", alt.Tooltip("revenue:Q", format=",.0f")]
-        )
-        st.altair_chart((line+pts).properties(height=360), use_container_width=True)
+    if use_plotly and PLOTLY_OK:
+        fig = px.line(daily_plot, x="date", y="revenue", title=None)
+        if not anoms.empty:
+            fig.add_trace(go.Scatter(
+                x=anoms["date"], y=anoms["revenue"], mode="markers",
+                marker=dict(size=9, color=PALETTE["danger"]),
+                name="Anomalies"
+            ))
+        fig.update_layout(margin=dict(l=0,r=0,t=0,b=0), height=360)
+        st.plotly_chart(fig, use_container_width=True)
     else:
-        st.altair_chart(line.properties(height=360), use_container_width=True)
+        base = alt.Chart(daily_plot).encode(x=alt.X("date:T", title="Date"))
+        line = base.mark_line(color=PALETTE["primary"]).encode(
+            y=alt.Y("revenue:Q", title="Revenue ($)", axis=alt.Axis(format="~s")),
+            tooltip=[alt.Tooltip("date:T"), alt.Tooltip("revenue:Q", format=",.0f")]
+        )
+        if not anoms.empty:
+            pts = alt.Chart(anoms).mark_point(size=85, filled=True, color=PALETTE["danger"]).encode(
+                x="date:T", y="revenue:Q", tooltip=["date:T", alt.Tooltip("revenue:Q", format=",.0f")]
+            )
+            st.altair_chart((line+pts).properties(height=360), use_container_width=True)
+        else:
+            st.altair_chart(line.properties(height=360), use_container_width=True)
+
 with b:
     st.subheader("Revenue by Channel")
     by_ch = filtered.groupby("channel", as_index=False)["revenue"].sum().sort_values("revenue", ascending=False)
-    st.altair_chart(alt.Chart(by_ch).mark_bar().encode(
-        x=alt.X("revenue:Q", title="Revenue ($)", axis=alt.Axis(format="~s")),
-        y=alt.Y("channel:N", sort="-x"),
-        tooltip=["channel:N", alt.Tooltip("revenue:Q", format=",.0f")]
-    ).properties(height=360), use_container_width=True)
+    if use_plotly and PLOTLY_OK:
+        fig = px.bar(by_ch, x="revenue", y="channel", orientation="h", title=None)
+        fig.update_layout(margin=dict(l=0,r=0,t=0,b=0), height=360)
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.altair_chart(alt.Chart(by_ch).mark_bar().encode(
+            x=alt.X("revenue:Q", title="Revenue ($)", axis=alt.Axis(format="~s")),
+            y=alt.Y("channel:N", sort="-x"),
+            tooltip=["channel:N", alt.Tooltip("revenue:Q", format=",.0f")]
+        ).properties(height=360), use_container_width=True)
 
 st.subheader("Revenue by Region")
 by_rg = filtered.groupby("region", as_index=False)["revenue"].sum().sort_values("revenue", ascending=False)
-st.altair_chart(alt.Chart(by_rg).mark_bar().encode(
-    x=alt.X("region:N", title="Region"),
-    y=alt.Y("revenue:Q", title="Revenue ($)", axis=alt.Axis(format="~s")),
-    tooltip=["region:N", alt.Tooltip("revenue:Q", format=",.0f")]
-).properties(height=320), use_container_width=True)
+if use_plotly and PLOTLY_OK:
+    fig = px.bar(by_rg, x="region", y="revenue", title=None)
+    fig.update_layout(margin=dict(l=0,r=0,t=0,b=0), height=320)
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.altair_chart(alt.Chart(by_rg).mark_bar().encode(
+        x=alt.X("region:N", title="Region"),
+        y=alt.Y("revenue:Q", title="Revenue ($)", axis=alt.Axis(format="~s")),
+        tooltip=["region:N", alt.Tooltip("revenue:Q", format=",.0f")]
+    ).properties(height=320), use_container_width=True)
 
 st.subheader("30-Day Revenue Forecast " + ("(Prophet)" if run_forecast and PROPHET_OK and not fc.empty else "(Fallback)"))
 if fc.empty:
     st.info("Not enough history to forecast yet or forecast disabled.")
 else:
-    st.altair_chart(alt.Chart(fc).mark_line(point=True).encode(
-        x=alt.X("date:T", title="Date"),
-        y=alt.Y("value:Q", title="Revenue ($)", axis=alt.Axis(format="~s")),
-        color="type:N",
-        tooltip=["type:N", "date:T", alt.Tooltip("value:Q", format=",.0f")]
-    ).properties(height=360), use_container_width=True)
+    if use_plotly and PLOTLY_OK:
+        fig = go.Figure()
+        hist = fc[fc["type"]=="Historical"]
+        fut  = fc[fc["type"]=="Forecast"]
+        fig.add_trace(go.Scatter(x=hist["date"], y=hist["value"], name="Historical", mode="lines+markers"))
+        fig.add_trace(go.Scatter(x=fut["date"], y=fut["value"], name="Forecast", mode="lines+markers"))
+        fig.update_layout(margin=dict(l=0,r=0,t=0,b=0), height=360)
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.altair_chart(alt.Chart(fc).mark_line(point=True).encode(
+            x=alt.X("date:T", title="Date"),
+            y=alt.Y("value:Q", title="Revenue ($)", axis=alt.Axis(format="~s")),
+            color="type:N",
+            tooltip=["type:N","date:T",alt.Tooltip("value:Q", format=",.0f")]
+        ).properties(height=360), use_container_width=True)
 
 st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 
-# ---------- ML & DL (train ONCE per dataset; gated by toggles) ----------
+# ===== ML & DL ========================================================
 ml1, ml2 = st.columns(2)
 if run_ml:
-    (churn_model, churn_acc), (upsell_model, upsell_acc) = train_global_models(_df_version(df), df)
+    # Train once on full dataset (cached)
+    @st.cache_resource(show_spinner=False)
+    def train_global_models(df_all: pd.DataFrame):
+        base = df_all.copy()
+        base["avg_rev_per_cust"] = base["revenue"]/base["customers"].replace(0,1)
+        out = {}
+        # Churn
+        base["churn_flag"] = (base["revenue"] < base["revenue"].median()).astype(int)
+        Xc = base[["revenue","customers","avg_rev_per_cust"]]; yc = base["churn_flag"]
+        churn_model=churn_acc=None
+        if len(base)>=10 and yc.nunique()>=2:
+            Xtr,Xte,ytr,yte = train_test_split(Xc,yc,test_size=0.2,random_state=42)
+            if XGB_OK:
+                try: churn_model = xgb.XGBClassifier(eval_metric="logloss", use_label_encoder=False).fit(Xtr,ytr)
+                except Exception: churn_model = GradientBoostingClassifier().fit(Xtr,ytr)
+            else:
+                churn_model = GradientBoostingClassifier().fit(Xtr,ytr)
+            churn_acc = accuracy_score(yte, churn_model.predict(Xte))
+        # Upsell
+        base["upsell_flag"] = (base["avg_rev_per_cust"] > base["avg_rev_per_cust"].median()).astype(int)
+        Xu = base[["revenue","customers","avg_rev_per_cust"]]; yu = base["upsell_flag"]
+        upsell_model=upsell_acc=None
+        if len(base)>=10 and yu.nunique()>=2:
+            Xtr,Xte,ytr,yte = train_test_split(Xu,yu,test_size=0.2,random_state=42)
+            if LGB_OK:
+                try: upsell_model = lgb.LGBMClassifier().fit(Xtr,ytr)
+                except Exception: upsell_model = GradientBoostingClassifier().fit(Xtr,ytr)
+            else:
+                upsell_model = GradientBoostingClassifier().fit(Xtr,ytr)
+            upsell_acc = accuracy_score(yte, upsell_model.predict(Xte))
+        return (churn_model,churn_acc),(upsell_model,upsell_acc)
+    (churn_model,churn_acc),(upsell_model,upsell_acc) = train_global_models(df)
 else:
     churn_model = upsell_model = None
     churn_acc = upsell_acc = None
 
 with ml1:
     st.subheader("🤖 Churn Model")
-    if not run_ml:
-        st.caption("Disabled (Turbo mode). Enable 'Train ML' to run.")
-    elif churn_model is None:
-        st.caption("Not enough rows/variance to train.")
-    else:
-        st.success(f"Accuracy: {churn_acc:.2f} {'(XGBoost)' if XGB_OK else '(GBClassifier)'}")
+    if not run_ml: st.caption("Disabled (Turbo mode).")
+    elif churn_model is None: st.caption("Not enough rows/variance to train.")
+    else: st.success(f"Accuracy: {churn_acc:.2f} {'(XGBoost)' if XGB_OK else '(GBClassifier)'}")
 
 with ml2:
     st.subheader("📈 Upsell Model")
-    if not run_ml:
-        st.caption("Disabled (Turbo mode). Enable 'Train ML' to run.")
-    elif upsell_model is None:
-        st.caption("Not enough rows/variance to train.")
-    else:
-        st.success(f"Accuracy: {upsell_acc:.2f} {'(LightGBM)' if LGB_OK else '(GBClassifier)'}")
+    if not run_ml: st.caption("Disabled (Turbo mode).")
+    elif upsell_model is None: st.caption("Not enough rows/variance to train.")
+    else: st.success(f"Accuracy: {upsell_acc:.2f} {'(LightGBM)' if LGB_OK else '(GBClassifier)'}")
+
+# AutoML (optional demonstration on a tiny label: high vs low rev)
+if run_automl:
+    st.subheader("🧪 AutoML")
+    tmp = df[["revenue","customers"]].copy()
+    tmp["label"] = (tmp["revenue"] > tmp["revenue"].median()).astype(int)
+    model_info, details = automl_train(tmp, target_col="label", framework=("flaml" if FLAML_OK else "pycaret"))
+    st.write(model_info)
+    if details: st.json(details)
 
 dl1, dl2 = st.columns(2)
 with dl1:
@@ -636,20 +677,16 @@ with dl1:
     else:
         series = filtered.groupby("date")["revenue"].sum().sort_index()
         m_lstm, lstm_loss = train_lstm_pytorch(series)
-        if m_lstm is None:
-            st.caption("Too few points to train.")
-        else:
-            st.success(f"Final loss: {lstm_loss:.4f}")
+        if m_lstm is None: st.caption("Too few points to train.")
+        else: st.success(f"Final loss: {lstm_loss:.4f}")
 with dl2:
     st.subheader("🧪 TensorFlow Dense (demo)")
     if turbo or not TF_OK:
         st.caption("Disabled (Turbo mode or TensorFlow not installed).")
     else:
         m_tf, tf_acc = train_tf_dense(filtered)
-        if m_tf is None:
-            st.caption("Too few rows to train.")
-        else:
-            st.success(f"Accuracy: {tf_acc:.2f}")
+        if m_tf is None: st.caption("Too few rows to train.")
+        else: st.success(f"Accuracy: {tf_acc:.2f}")
 
 st.subheader("🚨 Anomaly Days")
 if anoms.empty:
@@ -659,7 +696,211 @@ else:
 
 st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 
-# ---------- Export & Share ----------
+# ===== RAG: Knowledge Base (FAISS + SBERT; fallback to keyword) =======
+if "kb" not in st.session_state:
+    st.session_state.kb = {"docs": [], "chunks": [], "doc_map": []}
+if SBERT_OK and FAISS_OK and "rag" not in st.session_state:
+    st.session_state.rag = {"model": None, "index": None, "emb": []}
+
+def extract_text_from_file(uploaded):
+    name = uploaded.name.lower(); data = uploaded.read()
+    if name.endswith(".pdf") and PDF_READER_OK:
+        try:
+            reader = PdfReader(io.BytesIO(data))
+            return "\n".join([p.extract_text() or "" for p in reader.pages])
+        except Exception:
+            try: return data.decode("utf-8", errors="ignore")
+            except Exception: return ""
+    try:
+        return data.decode("utf-8", errors="ignore")
+    except Exception:
+        return ""
+
+def chunk_text(txt, size=900, overlap=150):
+    s = " ".join(txt.split()); out, i = [], 0
+    while i < len(s):
+        out.append(s[i:i+size])
+        if i+size >= len(s): break
+        i = i + size - overlap
+    return out
+
+def add_docs_keyword(files):
+    for f in files:
+        txt = extract_text_from_file(f); chs = chunk_text(txt); doc_id = str(uuid.uuid4())
+        st.session_state.kb["docs"].append({"id": doc_id, "name": f.name, "chunks": chs})
+        st.session_state.kb["chunks"].extend(chs); st.session_state.kb["doc_map"].extend([doc_id]*len(chs))
+
+def ensure_sbert_model():
+    if not (SBERT_OK and FAISS_OK): return None
+    if st.session_state.rag["model"] is None:
+        try:
+            st.session_state.rag["model"] = SentenceTransformer("all-MiniLM-L6-v2")
+        except Exception:
+            st.session_state.rag["model"] = None
+    return st.session_state.rag["model"]
+
+def add_docs_faiss(files):
+    model = ensure_sbert_model()
+    if model is None:
+        add_docs_keyword(files); return False
+    # create index if needed
+    if st.session_state.rag["index"] is None:
+        st.session_state.rag["index"] = faiss.IndexFlatIP(384)  # MiniLM dim
+        st.session_state.rag["emb"] = []
+    for f in files:
+        txt = extract_text_from_file(f); chs = chunk_text(txt); doc_id = str(uuid.uuid4())
+        st.session_state.kb["docs"].append({"id": doc_id, "name": f.name, "chunks": chs})
+        st.session_state.kb["chunks"].extend(chs); st.session_state.kb["doc_map"].extend([doc_id]*len(chs))
+        # embed chunks
+        embs = model.encode(chs, normalize_embeddings=True)
+        st.session_state.rag["index"].add(embs.astype("float32"))
+        st.session_state.rag["emb"].extend(embs.tolist())
+    return True
+
+def kb_search_keyword(query, top_k=5):
+    chunks = st.session_state.kb["chunks"]
+    if not chunks: return []
+    tokens = [t for t in re.findall(r"\w+", query.lower()) if t]
+    scores = []
+    for i, ch in enumerate(chunks):
+        txt = ch.lower(); s = sum(txt.count(t) for t in tokens)
+        scores.append((i, s))
+    scores.sort(key=lambda x: x[1], reverse=True)
+    out=[]
+    for i,s in scores[:top_k]:
+        doc_id = st.session_state.kb["doc_map"][i]
+        name = next((d["name"] for d in st.session_state.kb["docs"] if d["id"]==doc_id), "KB")
+        out.append({"chunk": st.session_state.kb["chunks"][i][:300], "score": int(s), "doc": name})
+    return out
+
+def kb_search_vector(query, top_k=5):
+    model = st.session_state.rag.get("model")
+    index = st.session_state.rag.get("index")
+    if model is None or index is None or not st.session_state.kb["chunks"]:
+        return kb_search_keyword(query, top_k=top_k)
+    q = model.encode([query], normalize_embeddings=True).astype("float32")
+    D, I = index.search(q, min(top_k, len(st.session_state.kb["chunks"])))
+    results=[]
+    for idx, score in zip(I[0], D[0]):
+        doc_id = st.session_state.kb["doc_map"][idx]
+        name = next((d["name"] for d in st.session_state.kb["docs"] if d["id"]==doc_id), "KB")
+        results.append({"chunk": st.session_state.kb["chunks"][idx][:300], "score": float(score), "doc": name})
+    return results
+
+def kb_export():
+    # export only structure (chunks); embeddings are rebuilt on import for simplicity
+    obj = {"docs": st.session_state.kb["docs"], "chunks": st.session_state.kb["chunks"], "doc_map": st.session_state.kb["doc_map"]}
+    return json.dumps(obj).encode("utf-8")
+
+def kb_import(data: bytes):
+    obj = json.loads(data.decode("utf-8"))
+    st.session_state.kb = obj
+    # reset vector index (rebuild on first add/search if desired)
+    if "rag" in st.session_state:
+        st.session_state.rag["index"] = None
+        st.session_state.rag["emb"] = []
+
+def crawl_and_add(urls, max_pages=5):
+    if not BS4_OK: return 0
+    added = 0
+    for u in urls[:max_pages]:
+        try:
+            r = requests.get(u, timeout=8, headers={"User-Agent":"AI-RevBot"})
+            soup = BeautifulSoup(r.text, "html.parser")
+            for tag in soup(["script","style","noscript"]): tag.extract()
+            text = soup.get_text(" ")
+            file_like = type("F", (), {"name": u, "read": lambda s=text: s.encode("utf-8")})()
+            if SBERT_OK and FAISS_OK:
+                add_docs_faiss([file_like]); 
+            else:
+                add_docs_keyword([file_like])
+            added += 1
+        except Exception:
+            pass
+    return added
+
+st.subheader("📚 Knowledge Base")
+kb_tab1, kb_tab2, kb_tab3 = st.tabs(["Upload Docs", "URL Crawler", "Export/Import"])
+with kb_tab1:
+    files = st.file_uploader("Add PDF/TXT/CSV/MD", type=["pdf","txt","csv","md"], accept_multiple_files=True)
+    if st.button("Add to KB"):
+        if files:
+            if SBERT_OK and FAISS_OK:
+                ok = add_docs_faiss(files)
+                st.success(f"Added {len(files)} file(s) with {'vector' if ok else 'keyword'} indexing.")
+            else:
+                add_docs_keyword(files); st.success(f"Added {len(files)} file(s). (keyword search)")
+        else:
+            st.info("Select file(s) first.")
+    if st.session_state.kb["docs"]:
+        st.caption("KB Files:")
+        for d in st.session_state.kb["docs"]:
+            st.caption(f"• {d['name']} ({len(d['chunks'])} chunks)")
+    q = st.text_input("Search your KB")
+    if q:
+        hits = kb_search_vector(q, top_k=5) if (SBERT_OK and FAISS_OK) else kb_search_keyword(q, top_k=5)
+        if not hits: st.info("No matches.")
+        for h in hits:
+            st.markdown(f"**{h['doc']}** — score {h['score']:.3f}  \n{h['chunk']}…")
+
+with kb_tab2:
+    if not BS4_OK:
+        st.info("Install beautifulsoup4 + requests to enable crawling.")
+    else:
+        urls_text = st.text_area("Enter URLs (one per line)")
+        max_pages = st.slider("Max pages", 1, 20, 5)
+        if st.button("Crawl & Add"):
+            seeds = [u.strip() for u in urls_text.splitlines() if u.strip()]
+            if not seeds: st.info("Add at least one URL.")
+            else:
+                added = crawl_and_add(seeds, max_pages=max_pages)
+                st.success(f"Added {added} page(s).")
+
+with kb_tab3:
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Export KB"):
+            st.download_button("Download kb.json", data=kb_export(), file_name="kb.json", mime="application/json")
+    with c2:
+        upkb = st.file_uploader("Import KB JSON", type=["json"], key="kbjson")
+        if upkb is not None:
+            try:
+                kb_import(upkb.read()); st.success("KB imported.")
+            except Exception as e:
+                st.error(f"Import error: {e}")
+
+# ===== Assistant (data-aware summary + KB snippets) ====================
+st.subheader("🤖 Assistant")
+if "chat" not in st.session_state:
+    st.session_state.chat = [{"role":"assistant","content":"Hi! Ask about anomalies, upsell, forecast, or your KB."}]
+for m in st.session_state.chat:
+    with st.chat_message(m["role"]): st.markdown(m["content"])
+msg = st.chat_input("Type your question…")
+if msg:
+    st.session_state.chat.append({"role":"user","content":msg})
+    with st.chat_message("user"): st.markdown(msg)
+    daily_q = filtered.groupby("date", as_index=False)["revenue"].sum().sort_values("date")
+    anoms_q = detect_anomalies(daily_q)
+    avg_day_rev_q = float(daily_q["revenue"].mean()) if not daily_q.empty else 0.0
+    potential_loss_q = float(max(0.0, (avg_day_rev_q*len(anoms_q) - anoms_q["revenue"].sum()) if not anoms_q.empty else 0.0))
+    by_channel_q = filtered.groupby("channel", as_index=False).agg(revenue=("revenue","sum"), customers=("customers","sum"))
+    by_channel_q["avg_deal_size"] = by_channel_q["revenue"] / by_channel_q["customers"].clip(lower=1)
+    target_ads_q = float(by_channel_q["avg_deal_size"].quantile(0.75)) if not by_channel_q.empty else 0.0
+    upsell_potential_q = float(((target_ads_q - by_channel_q["avg_deal_size"]).clip(lower=0) * by_channel_q["customers"]).sum()) if target_ads_q>0 else 0.0
+    fc_q = forecast_prophet(daily_q, 30) if (run_forecast and PROPHET_OK) else forecast_fallback(daily_q, 30)
+    future_sum_q = float(fc_q[fc_q["type"]=="Forecast"]["value"].sum()) if not fc_q.empty else 0.0
+    baseline_mean_q = float(daily_q["revenue"].tail(30).mean() if len(daily_q)>=30 else (daily_q["revenue"].mean() if not daily_q.empty else 0.0))
+    forecast_uplift_q = float(max(0.0, future_sum_q - baseline_mean_q*30))
+    summary = f"30d revenue {money(daily_q.tail(30)['revenue'].sum()) if not daily_q.empty else '$0'}, avg/day {money(avg_day_rev_q)}, recoverable {money(potential_loss_q)}, upsell {money(upsell_potential_q)}, uplift {money(forecast_uplift_q)}."
+    hits = kb_search_vector(msg, top_k=3) if (SBERT_OK and FAISS_OK) else kb_search_keyword(msg, top_k=3)
+    kb_txt = "\n".join([f"[{i+1}] {h['doc']}: {h['chunk']}…" for i,h in enumerate(hits)]) if hits else ""
+    reply = f"**Answer (data-aware):** {summary}\n" + (f"\n**KB context:**\n{kb_txt}" if kb_txt else "")
+    st.session_state.chat.append({"role":"assistant","content":reply})
+    with st.chat_message("assistant"): st.markdown(reply)
+
+st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
+
+# ===== Export & Share ==================================================
 st.subheader("⬇️ Export & Share")
 kpi_df = pd.DataFrame([
     {"metric":"Total Revenue (30d)","value": total_rev_30},
@@ -670,7 +911,6 @@ kpi_df = pd.DataFrame([
     {"metric":"Upsell Potential","value": upsell_potential},
     {"metric":"30d Forecast Uplift","value": forecast_uplift},
 ])
-
 cA, cB, cC, cD = st.columns([1,1,1,2])
 with cA: st.download_button("Filtered CSV", filtered.to_csv(index=False), "filtered_data.csv", "text/csv")
 with cB: st.download_button("KPIs CSV", kpi_df.to_csv(index=False), "kpis.csv", "text/csv")
@@ -699,135 +939,4 @@ if FPDF_OK:
 else:
     st.info("Install 'fpdf' to enable PDF export.")
 
-st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
-
-# ---------- Simple KB + Assistant (kept lightweight; same as before) ----------
-if "kb" not in st.session_state:
-    st.session_state.kb = {"docs": [], "chunks": [], "doc_map": []}
-
-def extract_text_from_file(uploaded):
-    name = uploaded.name.lower(); data = uploaded.read()
-    if name.endswith(".pdf") and PDF_READER_OK:
-        try:
-            reader = PdfReader(io.BytesIO(data))
-            return "\n".join([p.extract_text() or "" for p in reader.pages])
-        except Exception:
-            try: return data.decode("utf-8", errors="ignore")
-            except Exception: return ""
-    try:
-        return data.decode("utf-8", errors="ignore")
-    except Exception:
-        return ""
-
-def chunk_text(txt, size=900, overlap=150):
-    s = " ".join(txt.split()); out, i = [], 0
-    while i < len(s):
-        out.append(s[i:i+size])
-        if i+size >= len(s): break
-        i = i + size - overlap
-    return out
-
-def add_docs_to_kb(files):
-    for f in files:
-        txt = extract_text_from_file(f); chs = chunk_text(txt); doc_id = str(uuid.uuid4())
-        st.session_state.kb["docs"].append({"id": doc_id, "name": f.name, "chunks": chs})
-        st.session_state.kb["chunks"].extend(chs); st.session_state.kb["doc_map"].extend([doc_id]*len(chs))
-
-def kb_search(query, top_k=5):
-    chunks = st.session_state.kb["chunks"]
-    if not chunks: return []
-    tokens = [t for t in re.findall(r"\w+", query.lower()) if t]
-    scores = []
-    for i, ch in enumerate(chunks):
-        text = ch.lower()
-        s = sum(text.count(t) for t in tokens) if tokens else 0
-        scores.append((i, s))
-    scores.sort(key=lambda x: x[1], reverse=True)
-    results = []
-    for i, s in scores[:top_k]:
-        doc_id = st.session_state.kb["doc_map"][i]
-        name = next((d["name"] for d in st.session_state.kb["docs"] if d["id"]==doc_id), "KB")
-        results.append({"chunk": chunks[i][:300], "score": int(s), "doc": name})
-    return results
-
-def crawl_and_add(urls, max_pages=5):
-    if not BS4_OK: return 0
-    added = 0
-    for u in urls[:max_pages]:
-        try:
-            r = requests.get(u, timeout=8, headers={"User-Agent":"AI-RevBot"})
-            soup = BeautifulSoup(r.text, "html.parser")
-            for tag in soup(["script","style","noscript"]): tag.extract()
-            text = soup.get_text(" "); chs = chunk_text(text); doc_id = str(uuid.uuid4())
-            st.session_state.kb["docs"].append({"id":doc_id,"name":u,"chunks":chs})
-            st.session_state.kb["chunks"].extend(chs); st.session_state.kb["doc_map"].extend([doc_id]*len(chs))
-            added += 1
-        except Exception:
-            pass
-    return added
-
-st.subheader("📚 Knowledge Base")
-kb_tab1, kb_tab2 = st.tabs(["Upload Docs", "URL Crawler"])
-with kb_tab1:
-    files = st.file_uploader("Add PDF/TXT/CSV/MD", type=["pdf","txt","csv","md"], accept_multiple_files=True)
-    if st.button("Add to KB"):
-        if files: add_docs_to_kb(files); st.success(f"Added {len(files)} file(s).")
-        else: st.info("Select file(s) first.")
-    if st.session_state.kb["docs"]:
-        st.caption("KB Files:")
-        for d in st.session_state.kb["docs"]:
-            st.caption(f"• {d['name']} ({len(d['chunks'])} chunks)")
-    q = st.text_input("Search your KB")
-    if q:
-        hits = kb_search(q, top_k=5)
-        if not hits: st.info("No matches.")
-        for h in hits:
-            st.markdown(f"**{h['doc']}** — score {h['score']}  \n{h['chunk']}…")
-
-with kb_tab2:
-    if not BS4_OK:
-        st.info("Install beautifulsoup4 + requests to enable crawling.")
-    else:
-        urls_text = st.text_area("Enter URLs (one per line)")
-        max_pages = st.slider("Max pages", 1, 20, 5)
-        if st.button("Crawl & Add"):
-            seeds = [u.strip() for u in urls_text.splitlines() if u.strip()]
-            if not seeds: st.info("Add at least one URL.")
-            else:
-                added = crawl_and_add(seeds, max_pages=max_pages)
-                st.success(f"Added {added} page(s).")
-
-st.subheader("🤖 Assistant")
-if "chat" not in st.session_state:
-    st.session_state.chat = [{"role":"assistant","content":"Hi! Ask about anomalies, upsell, forecast, or your KB."}]
-for m in st.session_state.chat:
-    with st.chat_message(m["role"]): st.markdown(m["content"])
-msg = st.chat_input("Type your question…")
-if msg:
-    st.session_state.chat.append({"role":"user","content":msg})
-    with st.chat_message("user"): st.markdown(msg)
-    # quick, local data-aware reply
-    daily_q = filtered.groupby("date", as_index=False)["revenue"].sum().sort_values("date")
-    anoms_q = detect_anomalies(daily_q)
-    avg_day_rev_q = float(daily_q["revenue"].mean()) if not daily_q.empty else 0.0
-    potential_loss_q = float(max(0.0, (avg_day_rev_q*len(anoms_q) - anoms_q["revenue"].sum()) if not anoms_q.empty else 0.0))
-    by_channel_q = filtered.groupby("channel", as_index=False).agg(revenue=("revenue","sum"), customers=("customers","sum"))
-    by_channel_q["avg_deal_size"] = by_channel_q["revenue"] / by_channel_q["customers"].clip(lower=1)
-    target_ads_q = float(by_channel_q["avg_deal_size"].quantile(0.75)) if not by_channel_q.empty else 0.0
-    upsell_potential_q = float(((target_ads_q - by_channel_q["avg_deal_size"]).clip(lower=0) * by_channel_q["customers"]).sum()) if target_ads_q>0 else 0.0
-    if run_forecast and PROPHET_OK:
-        fc_q = forecast_prophet(daily_q, 30)
-    else:
-        fc_q = forecast_fallback(daily_q, 30)
-    future_sum_q = float(fc_q[fc_q["type"]=="Forecast"]["value"].sum()) if not fc_q.empty else 0.0
-    baseline_mean_q = float(daily_q["revenue"].tail(30).mean() if len(daily_q)>=30 else (daily_q["revenue"].mean() if not daily_q.empty else 0.0))
-    forecast_uplift_q = float(max(0.0, future_sum_q - baseline_mean_q*30))
-    summary = f"30d revenue {money(daily_q.tail(30)['revenue'].sum()) if not daily_q.empty else '$0'}, avg/day {money(avg_day_rev_q)}, recoverable {money(potential_loss_q)}, upsell {money(upsell_potential_q)}, uplift {money(forecast_uplift_q)}."
-    hits = kb_search(msg, top_k=3)
-    kb_txt = "\n".join([f"[{i+1}] {h['doc']}: {h['chunk']}…" for i,h in enumerate(hits)]) if hits else ""
-    reply = f"**Answer (data-aware):** {summary}\n" + (f"\n**KB context:**\n{kb_txt}" if kb_txt else "")
-    st.session_state.chat.append({"role":"assistant","content":reply})
-    with st.chat_message("assistant"): st.markdown(reply)
-
-st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
-st.caption("Tip: Use the sidebar’s ✅ Apply filters and ⚡ Turbo mode for speed. Prophet/ML/DL only run when enabled.")
+st.caption("Tip: Use ✅ Apply filters + ⚡ Turbo mode. Prophet/ML/DL only run when enabled. Plotly toggle adds zoomable charts.")
