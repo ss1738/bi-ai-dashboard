@@ -1,6 +1,15 @@
-# AI Revenue Recovery – Stable UI Edition (no overlays, reliable theme toggle)
+# AI Revenue Recovery – Fast & Stable Edition (Apply Filters + Turbo Mode + Caching)
 # Drop-in replacement for streamlit_app.py
 
+# ---------- Limit CPU threads early (prevents thrashing on small instances) ----------
+import os as _os
+_os.environ.setdefault("NUMEXPR_MAX_THREADS", "4")
+_os.environ.setdefault("OMP_NUM_THREADS", "4")
+_os.environ.setdefault("OPENBLAS_NUM_THREADS", "4")
+_os.environ.setdefault("MKL_NUM_THREADS", "4")
+_os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "4")
+
+# ---------- Imports ----------
 import os, io, re, uuid, sqlite3
 from datetime import datetime, timedelta
 import streamlit as st
@@ -11,7 +20,7 @@ from sklearn.ensemble import IsolationForest, GradientBoostingClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 
-# Optional libs with graceful fallbacks (so the app never dies)
+# Optional libs with graceful fallbacks (never crash if missing)
 PROPHET_OK = XGB_OK = LGB_OK = TORCH_OK = TF_OK = BS4_OK = PDF_READER_OK = FPDF_OK = True
 try:
     from prophet import Prophet
@@ -54,19 +63,16 @@ try:
 except Exception:
     pass
 
-# -----------------------------------------------------------------------------
-# Page config
-# -----------------------------------------------------------------------------
+# ---------- Page config ----------
 st.set_page_config(page_title="AI Revenue Recovery", page_icon="💰", layout="wide")
 
-# Theme toggle: store choice in session_state
+# Theme toggle
 if "theme" not in st.session_state:
-    st.session_state.theme = "Light"  # default
-
+    st.session_state.theme = "Light"
 THEME = st.session_state.theme
 DARK = THEME == "Dark"
 
-# A safe palette that won’t override widget text/colors
+# Simple, safe palette
 PALETTE = {
     "bg": "#FFFFFF" if not DARK else "#0F172A",
     "text": "#0F172A" if not DARK else "#E5E7EB",
@@ -80,25 +86,16 @@ PALETTE = {
 st.markdown(
     f"""
     <style>
-    /* Set page background and default text without affecting widgets */
-    .stApp {{
-        background: {PALETTE['bg']};
-    }}
-    .app-title {{
-        color: {PALETTE['text']};
-    }}
+    .stApp {{ background: {PALETTE['bg']}; }}
+    .app-title {{ color:{PALETTE['text']}; }}
     .hero {{
-        padding: 1rem 1.2rem;
-        border-radius: 14px;
-        background: linear-gradient(135deg, #6366F1, #EC4899);
-        color: #FFF;
+        padding: 1rem 1.2rem; border-radius: 14px;
+        background: linear-gradient(135deg, #6366F1, #EC4899); color:#fff;
         box-shadow: 0 6px 24px rgba(0,0,0,.12);
     }}
     .card {{
-        background: {PALETTE['card_bg']};
-        border: 1px solid {PALETTE['card_border']};
-        border-radius: 12px;
-        padding: 0.9rem 1rem;
+        background:{PALETTE['card_bg']}; border:1px solid {PALETTE['card_border']};
+        border-radius:12px; padding:.9rem 1rem;
     }}
     .kpi-title {{ font-size:.86rem; color:{PALETTE['muted']}; font-weight:600; margin-bottom:.2rem; }}
     .kpi-value {{ font-size:1.5rem; font-weight:800; color:{PALETTE['text']}; }}
@@ -109,9 +106,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# -----------------------------------------------------------------------------
-# Utilities
-# -----------------------------------------------------------------------------
+# ---------- Utils ----------
 DB_PATH = "sales.db"
 
 def money(x):
@@ -127,6 +122,7 @@ def read_query_params():
         return st.experimental_get_query_params()
 
 def set_query_params(**kwargs):
+    """Write URL query params once per apply, not on every keystroke."""
     try:
         qp = st.query_params
         for k, v in kwargs.items():
@@ -137,9 +133,7 @@ def set_query_params(**kwargs):
     except Exception:
         st.experimental_set_query_params(**{k: v for k, v in kwargs.items() if v is not None})
 
-# -----------------------------------------------------------------------------
-# Database
-# -----------------------------------------------------------------------------
+# ---------- Database ----------
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
@@ -150,22 +144,29 @@ def init_db():
     """)
     conn.close()
 
+@st.cache_data(show_spinner=False)
+def load_from_db_cached(db_path: str):
+    if not os.path.exists(db_path):
+        return pd.DataFrame(columns=["date","region","channel","segment","product","revenue","customers"])
+    conn = sqlite3.connect(db_path)
+    df = pd.read_sql("SELECT * FROM sales_data", conn)
+    conn.close()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date"]).copy()
+    # compact types
+    for c in ["region","channel","segment","product"]:
+        if c in df.columns:
+            df[c] = df[c].astype("category")
+    if "revenue" in df: df["revenue"] = df["revenue"].astype("float32")
+    if "customers" in df: df["customers"] = df["customers"].astype("int32")
+    return df
+
 def save_to_db(df):
     conn = sqlite3.connect(DB_PATH)
     df.to_sql("sales_data", conn, if_exists="replace", index=False)
     conn.close()
 
-def load_from_db():
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql("SELECT * FROM sales_data", conn)
-    conn.close()
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df = df.dropna(subset=["date"]).copy()
-    return df
-
-# -----------------------------------------------------------------------------
-# CSV Loader
-# -----------------------------------------------------------------------------
+# ---------- CSV Loader ----------
 def coerce_numeric(s): return pd.to_numeric(s, errors="coerce")
 
 def load_csv(file) -> pd.DataFrame:
@@ -196,11 +197,14 @@ def load_csv(file) -> pd.DataFrame:
         df["customers"] = np.maximum(1, (df["revenue"]/np.maximum(1.0, df["revenue"].median()/5)).round()).astype(int)
     df = df.dropna(subset=["date","revenue"]).copy()
     df["revenue"] = df["revenue"].clip(lower=0)
+    # compact
+    for c in ["region","channel","segment","product"]:
+        df[c] = df[c].astype("category")
+    df["revenue"] = df["revenue"].astype("float32")
+    df["customers"] = df["customers"].astype("int32")
     return df[["date","region","channel","segment","product","revenue","customers"]]
 
-# -----------------------------------------------------------------------------
-# ML: Anomalies + Forecast + Models (all with fallbacks)
-# -----------------------------------------------------------------------------
+# ---------- ML: Anomalies + Forecast ----------
 def detect_anomalies(daily_df: pd.DataFrame) -> pd.DataFrame:
     dd = daily_df.sort_values("date").copy()
     if dd.empty or dd["revenue"].isna().all():
@@ -253,41 +257,51 @@ def forecast_fallback(daily: pd.DataFrame, days=30) -> pd.DataFrame:
     fc = pd.DataFrame({"date":future_dates,"value":pred,"type":"Forecast"})
     return pd.concat([hist, fc], ignore_index=True)
 
-def train_churn_model(df):
-    base = df.copy()
+# ---------- ML Models (cached, train-once per dataset) ----------
+def _df_version(df: pd.DataFrame):
+    """A small version token so cache invalidates only when dataset really changes."""
+    if df.empty:
+        return (0, 0, 0)
+    return (len(df), int(pd.to_datetime(df["date"]).min().timestamp()), int(pd.to_datetime(df["date"]).max().timestamp()))
+
+@st.cache_resource(show_spinner=False)
+def train_global_models(df_version, df_all: pd.DataFrame):
+    """Train once per dataset (churn/upsell)."""
+    base = df_all.copy()
     base["avg_rev_per_cust"] = base["revenue"]/base["customers"].replace(0,1)
+    # Churn
     base["churn_flag"] = (base["revenue"] < base["revenue"].median()).astype(int)
-    X = base[["revenue","customers","avg_rev_per_cust"]]; y = base["churn_flag"]
-    if len(base) < 10 or y.nunique() < 2: return None, None
-    Xtr, Xte, ytr, yte = train_test_split(X,y,test_size=0.2,random_state=42)
-    if XGB_OK:
-        try:
-            model = xgb.XGBClassifier(eval_metric="logloss", use_label_encoder=False).fit(Xtr,ytr)
-        except Exception:
-            model = GradientBoostingClassifier().fit(Xtr,ytr)
-    else:
-        model = GradientBoostingClassifier().fit(Xtr,ytr)
-    acc = accuracy_score(yte, model.predict(Xte))
-    return model, acc
+    Xc = base[["revenue","customers","avg_rev_per_cust"]]; yc = base["churn_flag"]
+    churn_model = None; churn_acc = None
+    if len(base) >= 10 and yc.nunique() >= 2:
+        Xtr,Xte,ytr,yte = train_test_split(Xc,yc,test_size=0.2,random_state=42)
+        if XGB_OK:
+            try:
+                churn_model = xgb.XGBClassifier(eval_metric="logloss", use_label_encoder=False).fit(Xtr,ytr)
+            except Exception:
+                churn_model = GradientBoostingClassifier().fit(Xtr,ytr)
+        else:
+            churn_model = GradientBoostingClassifier().fit(Xtr,ytr)
+        churn_acc = accuracy_score(yte, churn_model.predict(Xte))
 
-def train_upsell_model(df):
-    base = df.copy()
-    base["avg_rev_per_cust"] = base["revenue"]/base["customers"].replace(0,1)
+    # Upsell
     base["upsell_flag"] = (base["avg_rev_per_cust"] > base["avg_rev_per_cust"].median()).astype(int)
-    X = base[["revenue","customers","avg_rev_per_cust"]]; y = base["upsell_flag"]
-    if len(base) < 10 or y.nunique() < 2: return None, None
-    Xtr, Xte, ytr, yte = train_test_split(X,y,test_size=0.2,random_state=42)
-    if LGB_OK:
-        try:
-            model = lgb.LGBMClassifier().fit(Xtr,ytr)
-        except Exception:
-            model = GradientBoostingClassifier().fit(Xtr,ytr)
-    else:
-        model = GradientBoostingClassifier().fit(Xtr,ytr)
-    acc = accuracy_score(yte, model.predict(Xte))
-    return model, acc
+    Xu = base[["revenue","customers","avg_rev_per_cust"]]; yu = base["upsell_flag"]
+    upsell_model = None; upsell_acc = None
+    if len(base) >= 10 and yu.nunique() >= 2:
+        Xtr,Xte,ytr,yte = train_test_split(Xu,yu,test_size=0.2,random_state=42)
+        if LGB_OK:
+            try:
+                upsell_model = lgb.LGBMClassifier().fit(Xtr,ytr)
+            except Exception:
+                upsell_model = GradientBoostingClassifier().fit(Xtr,ytr)
+        else:
+            upsell_model = GradientBoostingClassifier().fit(Xtr,ytr)
+        upsell_acc = accuracy_score(yte, upsell_model.predict(Xte))
 
-# Deep learning demos
+    return (churn_model, churn_acc), (upsell_model, upsell_acc)
+
+# ---------- DL demos ----------
 class LSTMModel(nn.Module):
     def __init__(self, input_size=1, hidden_size=32, num_layers=2, output_size=1):
         super().__init__()
@@ -299,10 +313,15 @@ class LSTMModel(nn.Module):
 
 def train_lstm_pytorch(series, epochs=3):
     if not TORCH_OK or len(series) < 5: return None, None
+    if "torch" in globals():
+        try:
+            torch.set_num_threads(2)
+        except Exception:
+            pass
     data = torch.tensor(series.values, dtype=torch.float32).view(-1,1,1)
     X, y = data[:-1], data[1:]
     model = LSTMModel()
-    criterion = nn.MSELoss(); opt = torch.optim.Adam(model.parameters(), lr=0.01)
+    criterion = nn.MSELoss(); opt = optim.Adam(model.parameters(), lr=0.01)
     for _ in range(epochs):
         opt.zero_grad(); out = model(X); loss = criterion(out, y); loss.backward(); opt.step()
     return model, float(loss.item())
@@ -321,6 +340,7 @@ def train_tf_dense(df):
     _, acc = model.evaluate(X, y, verbose=0)
     return model, float(acc)
 
+# ---------- PDF export ----------
 def export_kpi_pdf(kpis, insights):
     if not FPDF_OK:
         return None
@@ -332,9 +352,7 @@ def export_kpi_pdf(kpis, insights):
     for ins in insights: pdf.multi_cell(0,8,f"- {ins}")
     return pdf.output(dest="S").encode("latin-1")
 
-# -----------------------------------------------------------------------------
-# Header + Theme toggle (no overlay, no sticky)
-# -----------------------------------------------------------------------------
+# ---------- Header + Theme toggle ----------
 left, right = st.columns([0.75, 0.25])
 with left:
     st.markdown("<h2 class='app-title'>💰 AI Revenue Recovery</h2>", unsafe_allow_html=True)
@@ -345,9 +363,7 @@ with right:
         st.session_state.theme = mode
         st.rerun()
 
-# -----------------------------------------------------------------------------
-# Upload / Data load
-# -----------------------------------------------------------------------------
+# ---------- Upload / Load data ----------
 init_db()
 with st.expander("📂 Upload CSV (or keep previous data)", expanded=False):
     up = st.file_uploader("CSV columns: date, region, channel, segment, product, revenue, customers", type=["csv"])
@@ -355,7 +371,8 @@ with st.expander("📂 Upload CSV (or keep previous data)", expanded=False):
     with c1:
         if up is not None:
             try:
-                df_u = load_csv(up); save_to_db(df_u)
+                df_u = load_csv(up)
+                save_to_db(df_u)
                 st.success("✅ Data uploaded & saved")
             except Exception as e:
                 st.error(f"CSV error: {e}")
@@ -365,19 +382,14 @@ with st.expander("📂 Upload CSV (or keep previous data)", expanded=False):
             st.success("Cleared SQLite DB. Upload again to proceed.")
             st.stop()
 
-if os.path.exists(DB_PATH):
-    df = load_from_db()
-else:
+df = load_from_db_cached(DB_PATH)
+if df.empty:
     st.warning("No dataset found. Please upload a CSV.")
     st.stop()
 
-# -----------------------------------------------------------------------------
-# Filters + URL sync
-# -----------------------------------------------------------------------------
+# ---------- Filters (Apply button) + URL sync + Turbo toggles ----------
 df["date"] = pd.to_datetime(df["date"], errors="coerce")
 df = df.dropna(subset=["date"]).copy()
-if df.empty:
-    st.warning("No valid dates in dataset."); st.stop()
 
 min_ts, max_ts = pd.to_datetime(df["date"].min()), pd.to_datetime(df["date"].max())
 default_end = max_ts.date()
@@ -413,15 +425,36 @@ with st.sidebar:
     products_sel = st.multiselect("📦 Product", all_products, default=sel_products)
     date_range = st.date_input("📅 Date Range", value=(start_default, end_default),
                                min_value=min_ts.date(), max_value=max_ts.date())
+    st.markdown("---")
+    turbo = st.toggle("⚡ Turbo mode (skip heavy models)", value=True)
+    run_forecast = st.toggle("🔮 Forecast (Prophet if available)", value=not turbo)
+    run_ml = st.toggle("🤖 Train ML (Churn/Upsell)", value=not turbo)
+    apply = st.button("✅ Apply filters")
 
-if isinstance(date_range, (list, tuple)) and len(date_range)==2:
-    start_date, end_date = map(pd.to_datetime, date_range)
-else:
-    start_date = pd.to_datetime(date_range); end_date = pd.to_datetime(date_range)
+# Keep last applied filters; recompute only when Apply is pressed (or first run)
+if "applied_filters" not in st.session_state or apply:
+    st.session_state.applied_filters = {
+        "regions": regions_sel,
+        "channels": channels_sel,
+        "segments": segments_sel,
+        "products": products_sel,
+        "start": pd.to_datetime(date_range[0]),
+        "end": pd.to_datetime(date_range[1]),
+        "turbo": turbo, "run_forecast": run_forecast, "run_ml": run_ml
+    }
 
-set_query_params(region=",".join(regions_sel), channel=",".join(channels_sel),
-                 segment=",".join(segments_sel), product=",".join(products_sel),
-                 start=start_date.date().isoformat(), end=end_date.date().isoformat())
+cfg = st.session_state.applied_filters
+regions_sel, channels_sel = cfg["regions"], cfg["channels"]
+segments_sel, products_sel = cfg["segments"], cfg["products"]
+start_date, end_date = cfg["start"], cfg["end"]
+turbo, run_forecast, run_ml = cfg["turbo"], cfg["run_forecast"], cfg["run_ml"]
+
+# Write URL once per apply
+set_query_params(
+    region=",".join(regions_sel), channel=",".join(channels_sel),
+    segment=",".join(segments_sel), product=",".join(products_sel),
+    start=start_date.date().isoformat(), end=end_date.date().isoformat()
+)
 
 mask = (
     df["region"].isin(regions_sel)
@@ -435,22 +468,36 @@ if filtered.empty:
     st.warning("No rows match these filters. Showing all data for context.")
     filtered = df.copy()
 
-# -----------------------------------------------------------------------------
-# KPIs
-# -----------------------------------------------------------------------------
-daily = filtered.groupby("date", as_index=False)["revenue"].sum().sort_values("date")
-anoms = detect_anomalies(daily)
-avg_day_rev = float(daily["revenue"].mean()) if not daily.empty else 0.0
-potential_loss = float(max(0.0, (avg_day_rev*len(anoms) - anoms["revenue"].sum()) if not anoms.empty else 0.0))
+# ---------- Downsample helper for smooth charts ----------
+def downsample_daily(daily: pd.DataFrame, max_points=2000):
+    if len(daily) <= max_points:
+        return daily
+    idx = np.linspace(0, len(daily)-1, max_points).astype(int)
+    return daily.iloc[idx]
 
-by_channel = filtered.groupby("channel", as_index=False).agg(revenue=("revenue","sum"), customers=("customers","sum"))
-by_channel["avg_deal_size"] = by_channel["revenue"] / by_channel["customers"].clip(lower=1)
-target_ads = float(by_channel["avg_deal_size"].quantile(0.75)) if not by_channel.empty else 0.0
-upsell_potential = float(((target_ads - by_channel["avg_deal_size"]).clip(lower=0) * by_channel["customers"]).sum()) if target_ads>0 else 0.0
+# ---------- KPIs (cached by filtered hash) ----------
+@st.cache_data(show_spinner=False)
+def compute_kpis(filtered_df: pd.DataFrame):
+    daily = filtered_df.groupby("date", as_index=False)["revenue"].sum().sort_values("date")
+    anoms = detect_anomalies(daily)
+    avg_day_rev = float(daily["revenue"].mean()) if not daily.empty else 0.0
+    potential_loss = float(max(0.0, (avg_day_rev*len(anoms) - anoms["revenue"].sum()) if not anoms.empty else 0.0))
 
-fc_prophet = forecast_prophet(daily, 30) if PROPHET_OK else pd.DataFrame()
-fc_fallback = forecast_fallback(daily, 30) if fc_prophet.empty else pd.DataFrame()
-fc = fc_prophet if not fc_prophet.empty else fc_fallback
+    by_channel = filtered_df.groupby("channel", as_index=False).agg(revenue=("revenue","sum"), customers=("customers","sum"))
+    by_channel["avg_deal_size"] = by_channel["revenue"] / by_channel["customers"].clip(lower=1)
+    target_ads = float(by_channel["avg_deal_size"].quantile(0.75)) if not by_channel.empty else 0.0
+    upsell_potential = float(((target_ads - by_channel["avg_deal_size"]).clip(lower=0) * by_channel["customers"]).sum()) if target_ads>0 else 0.0
+
+    return daily, anoms, avg_day_rev, potential_loss, by_channel, upsell_potential
+
+daily, anoms, avg_day_rev, potential_loss, by_channel, upsell_potential = compute_kpis(filtered)
+
+# Forecast (guarded by toggle; Prophet optional)
+if run_forecast and PROPHET_OK:
+    fc = forecast_prophet(daily, 30)
+else:
+    fc = forecast_fallback(daily, 30)
+
 future_sum = float(fc[fc["type"]=="Forecast"]["value"].sum()) if not fc.empty else 0.0
 baseline_mean = float(daily["revenue"].tail(30).mean() if len(daily)>=30 else (daily["revenue"].mean() if not daily.empty else 0.0))
 forecast_uplift = float(max(0.0, future_sum - baseline_mean*30))
@@ -475,7 +522,7 @@ top_ch = by_channel.sort_values("revenue", ascending=False).head(1)
 top_channel_name = (top_ch["channel"].iloc[0] if not top_ch.empty else "—")
 top_channel_share = float(top_ch["revenue"].iloc[0] / max(1.0, by_channel["revenue"].sum()) * 100.0) if not top_ch.empty else 0.0
 
-# KPI row (cards)
+# ---------- UI: KPIs ----------
 c1, c2, c3, c4 = st.columns(4)
 with c1:
     st.markdown(f"<div class='card'><div class='kpi-title'>Total Revenue (30d)</div><div class='kpi-value'>{money(total_rev_30)}</div><div class='small'>{delta_total_rev:+.1f}% vs prev</div></div>", unsafe_allow_html=True)
@@ -494,9 +541,7 @@ with c7: st.markdown(f"<div class='card'><div class='kpi-title'>30d Forecast Upl
 
 st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 
-# -----------------------------------------------------------------------------
-# Recovery Moves
-# -----------------------------------------------------------------------------
+# ---------- Recovery Moves ----------
 st.subheader("💡 Top Recovery Moves")
 moves=[]
 if potential_loss>0: moves.append(f"Plug anomaly days → recover ~{money(potential_loss)} (pricing/promos, billing, ops).")
@@ -509,19 +554,19 @@ st.markdown("\n".join([f"- **{i}. {m}**" for i,m in enumerate(moves,1)]))
 
 st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 
-# -----------------------------------------------------------------------------
-# Charts
-# -----------------------------------------------------------------------------
+# ---------- Charts (downsampled for speed) ----------
 a, b = st.columns([2,1])
 with a:
     st.subheader("Revenue Trend & Anomalies")
-    base = alt.Chart(daily).encode(x=alt.X("date:T", title="Date"))
+    daily_plot = downsample_daily(daily)
+    base = alt.Chart(daily_plot).encode(x=alt.X("date:T", title="Date"))
     line = base.mark_line(color=PALETTE["primary"]).encode(
         y=alt.Y("revenue:Q", title="Revenue ($)", axis=alt.Axis(format="~s")),
         tooltip=[alt.Tooltip("date:T"), alt.Tooltip("revenue:Q", format=",.0f")]
     )
     if not anoms.empty:
-        pts = alt.Chart(anoms).mark_point(size=85, filled=True, color=PALETTE["danger"]).encode(
+        anoms_plot = anoms.merge(daily, on=["date","revenue"], how="inner")
+        pts = alt.Chart(anoms_plot).mark_point(size=85, filled=True, color=PALETTE["danger"]).encode(
             x="date:T", y="revenue:Q", tooltip=["date:T", alt.Tooltip("revenue:Q", format=",.0f")]
         )
         st.altair_chart((line+pts).properties(height=360), use_container_width=True)
@@ -544,9 +589,9 @@ st.altair_chart(alt.Chart(by_rg).mark_bar().encode(
     tooltip=["region:N", alt.Tooltip("revenue:Q", format=",.0f")]
 ).properties(height=320), use_container_width=True)
 
-st.subheader("30-Day Revenue Forecast " + ("(Prophet)" if PROPHET_OK and not fc_prophet.empty else "(Fallback)"))
+st.subheader("30-Day Revenue Forecast " + ("(Prophet)" if run_forecast and PROPHET_OK and not fc.empty else "(Fallback)"))
 if fc.empty:
-    st.info("Not enough history to forecast yet.")
+    st.info("Not enough history to forecast yet or forecast disabled.")
 else:
     st.altair_chart(alt.Chart(fc).mark_line(point=True).encode(
         x=alt.X("date:T", title="Date"),
@@ -557,42 +602,54 @@ else:
 
 st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 
-# -----------------------------------------------------------------------------
-# ML & DL
-# -----------------------------------------------------------------------------
+# ---------- ML & DL (train ONCE per dataset; gated by toggles) ----------
 ml1, ml2 = st.columns(2)
+if run_ml:
+    (churn_model, churn_acc), (upsell_model, upsell_acc) = train_global_models(_df_version(df), df)
+else:
+    churn_model = upsell_model = None
+    churn_acc = upsell_acc = None
+
 with ml1:
     st.subheader("🤖 Churn Model")
-    model_churn, acc_xgb = train_churn_model(filtered)
-    if model_churn is None:
+    if not run_ml:
+        st.caption("Disabled (Turbo mode). Enable 'Train ML' to run.")
+    elif churn_model is None:
         st.caption("Not enough rows/variance to train.")
     else:
-        st.success(f"Accuracy: {acc_xgb:.2f} {'(XGBoost)' if XGB_OK else '(GBClassifier)'}")
+        st.success(f"Accuracy: {churn_acc:.2f} {'(XGBoost)' if XGB_OK else '(GBClassifier)'}")
 
 with ml2:
     st.subheader("📈 Upsell Model")
-    model_upsell, acc_lgb = train_upsell_model(filtered)
-    if model_upsell is None:
+    if not run_ml:
+        st.caption("Disabled (Turbo mode). Enable 'Train ML' to run.")
+    elif upsell_model is None:
         st.caption("Not enough rows/variance to train.")
     else:
-        st.success(f"Accuracy: {acc_lgb:.2f} {'(LightGBM)' if LGB_OK else '(GBClassifier)'}")
+        st.success(f"Accuracy: {upsell_acc:.2f} {'(LightGBM)' if LGB_OK else '(GBClassifier)'}")
 
 dl1, dl2 = st.columns(2)
 with dl1:
     st.subheader("🧠 PyTorch LSTM (demo)")
-    series = filtered.groupby("date")["revenue"].sum().sort_index()
-    m_lstm, lstm_loss = train_lstm_pytorch(series)
-    if m_lstm is None:
-        st.caption("Unavailable (library missing or too few points).")
+    if turbo or not TORCH_OK:
+        st.caption("Disabled (Turbo mode or PyTorch not installed).")
     else:
-        st.success(f"Final loss: {lstm_loss:.4f}")
+        series = filtered.groupby("date")["revenue"].sum().sort_index()
+        m_lstm, lstm_loss = train_lstm_pytorch(series)
+        if m_lstm is None:
+            st.caption("Too few points to train.")
+        else:
+            st.success(f"Final loss: {lstm_loss:.4f}")
 with dl2:
     st.subheader("🧪 TensorFlow Dense (demo)")
-    m_tf, tf_acc = train_tf_dense(filtered)
-    if m_tf is None:
-        st.caption("Unavailable (library missing or too few rows).")
+    if turbo or not TF_OK:
+        st.caption("Disabled (Turbo mode or TensorFlow not installed).")
     else:
-        st.success(f"Accuracy: {tf_acc:.2f}")
+        m_tf, tf_acc = train_tf_dense(filtered)
+        if m_tf is None:
+            st.caption("Too few rows to train.")
+        else:
+            st.success(f"Accuracy: {tf_acc:.2f}")
 
 st.subheader("🚨 Anomaly Days")
 if anoms.empty:
@@ -602,9 +659,7 @@ else:
 
 st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 
-# -----------------------------------------------------------------------------
-# Export & Share
-# -----------------------------------------------------------------------------
+# ---------- Export & Share ----------
 st.subheader("⬇️ Export & Share")
 kpi_df = pd.DataFrame([
     {"metric":"Total Revenue (30d)","value": total_rev_30},
@@ -646,9 +701,7 @@ else:
 
 st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 
-# -----------------------------------------------------------------------------
-# Simple KB + Assistant (unchanged logic, safer UI)
-# -----------------------------------------------------------------------------
+# ---------- Simple KB + Assistant (kept lightweight; same as before) ----------
 if "kb" not in st.session_state:
     st.session_state.kb = {"docs": [], "chunks": [], "doc_map": []}
 
@@ -754,21 +807,22 @@ if msg:
     st.session_state.chat.append({"role":"user","content":msg})
     with st.chat_message("user"): st.markdown(msg)
     # quick, local data-aware reply
-    daily = filtered.groupby("date", as_index=False)["revenue"].sum().sort_values("date")
-    anoms = detect_anomalies(daily)
-    avg_day_rev = float(daily["revenue"].mean()) if not daily.empty else 0.0
-    potential_loss = float(max(0.0, (avg_day_rev*len(anoms) - anoms["revenue"].sum()) if not anoms.empty else 0.0))
-    by_channel = filtered.groupby("channel", as_index=False).agg(revenue=("revenue","sum"), customers=("customers","sum"))
-    by_channel["avg_deal_size"] = by_channel["revenue"] / by_channel["customers"].clip(lower=1)
-    target_ads = float(by_channel["avg_deal_size"].quantile(0.75)) if not by_channel.empty else 0.0
-    upsell_potential = float(((target_ads - by_channel["avg_deal_size"]).clip(lower=0) * by_channel["customers"]).sum()) if target_ads>0 else 0.0
-    fc_prophet = forecast_prophet(daily, 30) if PROPHET_OK else pd.DataFrame()
-    fc_fallback = forecast_fallback(daily, 30) if fc_prophet.empty else pd.DataFrame()
-    fc = fc_prophet if not fc_prophet.empty else fc_fallback
-    future_sum = float(fc[fc["type"]=="Forecast"]["value"].sum()) if not fc.empty else 0.0
-    baseline_mean = float(daily["revenue"].tail(30).mean() if len(daily)>=30 else (daily["revenue"].mean() if not daily.empty else 0.0))
-    forecast_uplift = float(max(0.0, future_sum - baseline_mean*30))
-    summary = f"30d revenue {money(daily.tail(30)['revenue'].sum()) if not daily.empty else '$0'}, avg/day {money(avg_day_rev)}, recoverable {money(potential_loss)}, upsell {money(upsell_potential)}, uplift {money(forecast_uplift)}."
+    daily_q = filtered.groupby("date", as_index=False)["revenue"].sum().sort_values("date")
+    anoms_q = detect_anomalies(daily_q)
+    avg_day_rev_q = float(daily_q["revenue"].mean()) if not daily_q.empty else 0.0
+    potential_loss_q = float(max(0.0, (avg_day_rev_q*len(anoms_q) - anoms_q["revenue"].sum()) if not anoms_q.empty else 0.0))
+    by_channel_q = filtered.groupby("channel", as_index=False).agg(revenue=("revenue","sum"), customers=("customers","sum"))
+    by_channel_q["avg_deal_size"] = by_channel_q["revenue"] / by_channel_q["customers"].clip(lower=1)
+    target_ads_q = float(by_channel_q["avg_deal_size"].quantile(0.75)) if not by_channel_q.empty else 0.0
+    upsell_potential_q = float(((target_ads_q - by_channel_q["avg_deal_size"]).clip(lower=0) * by_channel_q["customers"]).sum()) if target_ads_q>0 else 0.0
+    if run_forecast and PROPHET_OK:
+        fc_q = forecast_prophet(daily_q, 30)
+    else:
+        fc_q = forecast_fallback(daily_q, 30)
+    future_sum_q = float(fc_q[fc_q["type"]=="Forecast"]["value"].sum()) if not fc_q.empty else 0.0
+    baseline_mean_q = float(daily_q["revenue"].tail(30).mean() if len(daily_q)>=30 else (daily_q["revenue"].mean() if not daily_q.empty else 0.0))
+    forecast_uplift_q = float(max(0.0, future_sum_q - baseline_mean_q*30))
+    summary = f"30d revenue {money(daily_q.tail(30)['revenue'].sum()) if not daily_q.empty else '$0'}, avg/day {money(avg_day_rev_q)}, recoverable {money(potential_loss_q)}, upsell {money(upsell_potential_q)}, uplift {money(forecast_uplift_q)}."
     hits = kb_search(msg, top_k=3)
     kb_txt = "\n".join([f"[{i+1}] {h['doc']}: {h['chunk']}…" for i,h in enumerate(hits)]) if hits else ""
     reply = f"**Answer (data-aware):** {summary}\n" + (f"\n**KB context:**\n{kb_txt}" if kb_txt else "")
@@ -776,4 +830,4 @@ if msg:
     with st.chat_message("assistant"): st.markdown(reply)
 
 st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
-st.caption("Tip: switch themes from the top-right toggle. No overlays/sticky bars used, so all clicks work reliably.")
+st.caption("Tip: Use the sidebar’s ✅ Apply filters and ⚡ Turbo mode for speed. Prophet/ML/DL only run when enabled.")
