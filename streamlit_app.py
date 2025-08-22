@@ -1,7 +1,7 @@
-# AI Revenue Recovery – Polished UI Edition (keeps all features)
-# Paste into streamlit_app.py
+# AI Revenue Recovery – Stable UI Edition (no overlays, reliable theme toggle)
+# Drop-in replacement for streamlit_app.py
 
-import os, io, re, json, uuid, sqlite3
+import os, io, re, uuid, sqlite3
 from datetime import datetime, timedelta
 import streamlit as st
 import pandas as pd
@@ -11,8 +11,8 @@ from sklearn.ensemble import IsolationForest, GradientBoostingClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 
-# Optional libs with graceful fallbacks
-PROPHET_OK = XGB_OK = LGB_OK = TORCH_OK = TF_OK = BS4_OK = PDF_READER_OK = True
+# Optional libs with graceful fallbacks (so the app never dies)
+PROPHET_OK = XGB_OK = LGB_OK = TORCH_OK = TF_OK = BS4_OK = PDF_READER_OK = FPDF_OK = True
 try:
     from prophet import Prophet
 except Exception:
@@ -47,104 +47,71 @@ except Exception:
 try:
     from fpdf import FPDF
 except Exception:
-    pass
+    FPDF_OK = False
 
 try:
     alt.data_transformers.disable_max_rows()
 except Exception:
     pass
 
-# ---------------------------------------------------------
-# Page + Theming
-# ---------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Page config
+# -----------------------------------------------------------------------------
 st.set_page_config(page_title="AI Revenue Recovery", page_icon="💰", layout="wide")
 
+# Theme toggle: store choice in session_state
 if "theme" not in st.session_state:
-    st.session_state.theme = "dark"  # default
+    st.session_state.theme = "Light"  # default
 
-DARK = st.session_state.theme == "dark"
+THEME = st.session_state.theme
+DARK = THEME == "Dark"
 
+# A safe palette that won’t override widget text/colors
 PALETTE = {
-    "primary": "#7C3AED" if DARK else "#6366F1",
-    "secondary": "#EC4899",
-    "bg": "#0B1020" if DARK else "#F6F7FB",
-    "card": "rgba(255,255,255,0.06)" if DARK else "#FFFFFF",
-    "text": "#E5E7EB" if DARK else "#0F172A",
-    "muted": "#9CA3AF" if DARK else "#6B7280",
-    "accent": "#22D3EE",
-    "success": "#10B981",
+    "bg": "#FFFFFF" if not DARK else "#0F172A",
+    "text": "#0F172A" if not DARK else "#E5E7EB",
+    "card_bg": "#FFFFFF" if not DARK else "#111827",
+    "card_border": "#E5E7EB" if not DARK else "#1F2937",
+    "primary": "#6366F1",
     "danger": "#EF4444",
+    "muted": "#6B7280" if not DARK else "#9CA3AF",
 }
 
 st.markdown(
     f"""
-<style>
-:root {{
-  --bg: {PALETTE['bg']};
-  --text: {PALETTE['text']};
-  --muted: {PALETTE['muted']};
-  --card: {PALETTE['card']};
-  --primary: {PALETTE['primary']};
-  --secondary: {PALETTE['secondary']};
-  --accent: {PALETTE['accent']};
-  --success: {PALETTE['success']};
-  --danger: {PALETTE['danger']};
-}}
-html, body, .stApp {{
-  background: var(--bg) !important;
-  color: var(--text) !important;
-}}
-/* Hide default chrome */
-#MainMenu, footer, .stDeployButton {{ display: none !important; }}
-/* Top bar */
-.navbar {{
-  position: sticky; top: 0; z-index: 1000;
-  backdrop-filter: saturate(180%) blur(8px);
-  background: rgba(0,0,0,{0.35 if DARK else 0.05});
-  border-bottom: 1px solid rgba(255,255,255,0.08);
-  padding: .6rem 1rem; margin: -1rem -1rem 1rem -1rem;
-}}
-.brand {{ display:flex; align-items:center; gap:.6rem; font-weight:800; }}
-.badge {{
-  padding:.15rem .5rem;border-radius:999px;
-  background: linear-gradient(135deg, var(--primary), var(--secondary));
-  color:#fff;font-size:.78rem; font-weight:700;
-}}
-.theme-toggle button {{ border:1px solid rgba(255,255,255,.15); }}
-/* Hero */
-.hero {{
-  padding: 1.1rem 1.3rem; border-radius: 16px;
-  background: linear-gradient(135deg, var(--primary), var(--secondary));
-  color:#fff; box-shadow: 0 12px 40px rgba(0,0,0,.25);
-}}
-/* Cards */
-.card {{
-  background: var(--card);
-  border-radius: 16px;
-  padding: 1rem 1.1rem;
-  border: 1px solid rgba(255,255,255,{0.06 if DARK else 0.08});
-  box-shadow: { '0 10px 30px rgba(0,0,0,.35)' if DARK else '0 6px 18px rgba(0,0,0,.07)' };
-}}
-.kpi-title {{ color: var(--muted); font-weight:600; font-size:.86rem; }}
-.kpi-value {{ font-size: 1.6rem; font-weight: 800; margin:.1rem 0; }}
-.kpi-delta {{
-  font-size:.78rem; font-weight:700; color:#fff;
-  display:inline-block; padding:.12rem .5rem; border-radius:999px;
-}}
-.kpi-delta.pos {{ background: rgba(16,185,129,.9); }}
-.kpi-delta.neg {{ background: rgba(239,68,68,.9); }}
-.section-title {{ font-size:1.05rem; font-weight:800; margin:.2rem 0 .6rem; }}
-.muted {{ color: var(--muted); }}
-.cta {{ background: #0F172A; color:#fff; padding: .9rem 1rem; border-radius: 14px; }}
-hr.div {{ border:none; height:1px; background:linear-gradient(90deg,transparent,rgba(255,255,255,.18),transparent); margin:1rem 0; }}
-</style>
-""",
+    <style>
+    /* Set page background and default text without affecting widgets */
+    .stApp {{
+        background: {PALETTE['bg']};
+    }}
+    .app-title {{
+        color: {PALETTE['text']};
+    }}
+    .hero {{
+        padding: 1rem 1.2rem;
+        border-radius: 14px;
+        background: linear-gradient(135deg, #6366F1, #EC4899);
+        color: #FFF;
+        box-shadow: 0 6px 24px rgba(0,0,0,.12);
+    }}
+    .card {{
+        background: {PALETTE['card_bg']};
+        border: 1px solid {PALETTE['card_border']};
+        border-radius: 12px;
+        padding: 0.9rem 1rem;
+    }}
+    .kpi-title {{ font-size:.86rem; color:{PALETTE['muted']}; font-weight:600; margin-bottom:.2rem; }}
+    .kpi-value {{ font-size:1.5rem; font-weight:800; color:{PALETTE['text']}; }}
+    .small {{ color:{PALETTE['muted']}; font-size:.85rem; }}
+    .divider {{ height:1px; background:{PALETTE['card_border']}; margin:1rem 0; }}
+    </style>
+    """,
     unsafe_allow_html=True,
 )
 
-# ---------------------------------------------------------
-# Utils
-# ---------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Utilities
+# -----------------------------------------------------------------------------
 DB_PATH = "sales.db"
 
 def money(x):
@@ -155,7 +122,7 @@ def money(x):
 
 def read_query_params():
     try:
-        return st.query_params
+        return st.query_params  # Streamlit >=1.32
     except Exception:
         return st.experimental_get_query_params()
 
@@ -170,9 +137,9 @@ def set_query_params(**kwargs):
     except Exception:
         st.experimental_set_query_params(**{k: v for k, v in kwargs.items() if v is not None})
 
-# ---------------------------------------------------------
-# DB
-# ---------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Database
+# -----------------------------------------------------------------------------
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
@@ -196,9 +163,9 @@ def load_from_db():
     df = df.dropna(subset=["date"]).copy()
     return df
 
-# ---------------------------------------------------------
+# -----------------------------------------------------------------------------
 # CSV Loader
-# ---------------------------------------------------------
+# -----------------------------------------------------------------------------
 def coerce_numeric(s): return pd.to_numeric(s, errors="coerce")
 
 def load_csv(file) -> pd.DataFrame:
@@ -210,27 +177,30 @@ def load_csv(file) -> pd.DataFrame:
             df["date"] = pd.to_datetime(df[cols[cand]], errors="coerce"); break
     else:
         raise ValueError("CSV must include 'date' (or order_date/created_at/day).")
+    # dims
     df["region"]  = df[cols["region"]].astype(str)  if "region"  in cols else "Unknown"
     df["channel"] = df[cols["channel"]].astype(str) if "channel" in cols else "Unknown"
     df["segment"] = df[cols["segment"]].astype(str) if "segment" in cols else "All"
     df["product"] = df[cols["product"]].astype(str) if "product" in cols else "All"
+    # revenue
     if "revenue" in cols:
         df["revenue"] = coerce_numeric(df[cols["revenue"]])
     elif "price" in cols and "quantity" in cols:
         df["revenue"] = coerce_numeric(df[cols["price"]]) * coerce_numeric(df[cols["quantity"]])
     else:
         raise ValueError("CSV must include 'revenue' or ('price' and 'quantity').")
+    # customers
     if "customers" in cols:
         df["customers"] = coerce_numeric(df[cols["customers"]]).fillna(1).astype(int)
     else:
-        df["customers"] = np.maximum(1, (df["revenue"] / np.maximum(1.0, df["revenue"].median()/5)).round()).astype(int)
+        df["customers"] = np.maximum(1, (df["revenue"]/np.maximum(1.0, df["revenue"].median()/5)).round()).astype(int)
     df = df.dropna(subset=["date","revenue"]).copy()
-    df["revenue"] = df["revenue"].clip(lower=0.0)
+    df["revenue"] = df["revenue"].clip(lower=0)
     return df[["date","region","channel","segment","product","revenue","customers"]]
 
-# ---------------------------------------------------------
-# ML – Anomalies + Forecast (Prophet fallback)
-# ---------------------------------------------------------
+# -----------------------------------------------------------------------------
+# ML: Anomalies + Forecast + Models (all with fallbacks)
+# -----------------------------------------------------------------------------
 def detect_anomalies(daily_df: pd.DataFrame) -> pd.DataFrame:
     dd = daily_df.sort_values("date").copy()
     if dd.empty or dd["revenue"].isna().all():
@@ -285,11 +255,11 @@ def forecast_fallback(daily: pd.DataFrame, days=30) -> pd.DataFrame:
 
 def train_churn_model(df):
     base = df.copy()
-    base["avg_rev_per_cust"] = base["revenue"] / base["customers"].replace(0,1)
+    base["avg_rev_per_cust"] = base["revenue"]/base["customers"].replace(0,1)
     base["churn_flag"] = (base["revenue"] < base["revenue"].median()).astype(int)
     X = base[["revenue","customers","avg_rev_per_cust"]]; y = base["churn_flag"]
     if len(base) < 10 or y.nunique() < 2: return None, None
-    Xtr,Xte,ytr,yte = train_test_split(X,y,test_size=0.2,random_state=42)
+    Xtr, Xte, ytr, yte = train_test_split(X,y,test_size=0.2,random_state=42)
     if XGB_OK:
         try:
             model = xgb.XGBClassifier(eval_metric="logloss", use_label_encoder=False).fit(Xtr,ytr)
@@ -302,11 +272,11 @@ def train_churn_model(df):
 
 def train_upsell_model(df):
     base = df.copy()
-    base["avg_rev_per_cust"] = base["revenue"] / base["customers"].replace(0,1)
+    base["avg_rev_per_cust"] = base["revenue"]/base["customers"].replace(0,1)
     base["upsell_flag"] = (base["avg_rev_per_cust"] > base["avg_rev_per_cust"].median()).astype(int)
     X = base[["revenue","customers","avg_rev_per_cust"]]; y = base["upsell_flag"]
     if len(base) < 10 or y.nunique() < 2: return None, None
-    Xtr,Xte,ytr,yte = train_test_split(X,y,test_size=0.2,random_state=42)
+    Xtr, Xte, ytr, yte = train_test_split(X,y,test_size=0.2,random_state=42)
     if LGB_OK:
         try:
             model = lgb.LGBMClassifier().fit(Xtr,ytr)
@@ -317,6 +287,7 @@ def train_upsell_model(df):
     acc = accuracy_score(yte, model.predict(Xte))
     return model, acc
 
+# Deep learning demos
 class LSTMModel(nn.Module):
     def __init__(self, input_size=1, hidden_size=32, num_layers=2, output_size=1):
         super().__init__()
@@ -331,7 +302,7 @@ def train_lstm_pytorch(series, epochs=3):
     data = torch.tensor(series.values, dtype=torch.float32).view(-1,1,1)
     X, y = data[:-1], data[1:]
     model = LSTMModel()
-    criterion = nn.MSELoss(); opt = optim.Adam(model.parameters(), lr=0.01)
+    criterion = nn.MSELoss(); opt = torch.optim.Adam(model.parameters(), lr=0.01)
     for _ in range(epochs):
         opt.zero_grad(); out = model(X); loss = criterion(out, y); loss.backward(); opt.step()
     return model, float(loss.item())
@@ -351,6 +322,8 @@ def train_tf_dense(df):
     return model, float(acc)
 
 def export_kpi_pdf(kpis, insights):
+    if not FPDF_OK:
+        return None
     pdf = FPDF(); pdf.add_page()
     pdf.set_font("Arial", "B", 16); pdf.cell(200,10,"AI Revenue Recovery Report",ln=True,align="C")
     pdf.set_font("Arial","",12); pdf.ln(6); pdf.cell(200,8,"KPIs",ln=True)
@@ -359,46 +332,22 @@ def export_kpi_pdf(kpis, insights):
     for ins in insights: pdf.multi_cell(0,8,f"- {ins}")
     return pdf.output(dest="S").encode("latin-1")
 
-# ---------------------------------------------------------
-# NAV / THEME
-# ---------------------------------------------------------
-st.markdown(
-    f"""
-<div class="navbar">
-  <div style="display:flex;justify-content:space-between;align-items:center;">
-    <div class="brand">
-      <span style="font-size:1.35rem;">💰 AI Revenue Recovery</span>
-      <span class="badge">v1.0</span>
-    </div>
-    <div class="theme-toggle">
-      <form action="#" method="post">
-      </form>
-    </div>
-  </div>
-</div>
-""",
-    unsafe_allow_html=True,
-)
-tcol1, tcol2, tcol3 = st.columns([0.7,0.15,0.15])
-with tcol2:
-    if st.button(("🌙 Dark" if not DARK else "🌞 Light"), use_container_width=True):
-        st.session_state.theme = "dark" if not DARK else "light"
+# -----------------------------------------------------------------------------
+# Header + Theme toggle (no overlay, no sticky)
+# -----------------------------------------------------------------------------
+left, right = st.columns([0.75, 0.25])
+with left:
+    st.markdown("<h2 class='app-title'>💰 AI Revenue Recovery</h2>", unsafe_allow_html=True)
+    st.markdown("<div class='hero'>Upload your sales CSV → Filter → See KPIs, anomalies, forecast, ML/DL, export, and KB search.</div>", unsafe_allow_html=True)
+with right:
+    mode = st.radio("Theme", ["Light","Dark"], horizontal=True, index=(1 if DARK else 0), key="theme_radio")
+    if mode != st.session_state.theme:
+        st.session_state.theme = mode
         st.rerun()
-with tcol3:
-    st.markdown(f"<div class='card' style='text-align:center;font-weight:700;'>Theme: {'Dark' if DARK else 'Light'}</div>", unsafe_allow_html=True)
 
-# ---------------------------------------------------------
-# Hero
-# ---------------------------------------------------------
-st.markdown(
-    "<div class='hero'><h3 style='margin:0;'>Recover $500K+ in Lost Revenue with AI</h3>"
-    "<p style='margin:.3rem 0 0 0;'>Upload your sales CSV • Filter by region/channel/segment/product/date • See KPIs, anomalies, forecast, ML/DL, export PDF, and search your KB.</p></div>",
-    unsafe_allow_html=True,
-)
-
-# ---------------------------------------------------------
-# Data load / upload
-# ---------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Upload / Data load
+# -----------------------------------------------------------------------------
 init_db()
 with st.expander("📂 Upload CSV (or keep previous data)", expanded=False):
     up = st.file_uploader("CSV columns: date, region, channel, segment, product, revenue, customers", type=["csv"])
@@ -406,8 +355,7 @@ with st.expander("📂 Upload CSV (or keep previous data)", expanded=False):
     with c1:
         if up is not None:
             try:
-                df_u = load_csv(up)
-                save_to_db(df_u)
+                df_u = load_csv(up); save_to_db(df_u)
                 st.success("✅ Data uploaded & saved")
             except Exception as e:
                 st.error(f"CSV error: {e}")
@@ -423,13 +371,13 @@ else:
     st.warning("No dataset found. Please upload a CSV.")
     st.stop()
 
-# ---------------------------------------------------------
-# Filters (+ URL sync) in sidebar
-# ---------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Filters + URL sync
+# -----------------------------------------------------------------------------
 df["date"] = pd.to_datetime(df["date"], errors="coerce")
 df = df.dropna(subset=["date"]).copy()
 if df.empty:
-    st.warning("No valid dates after cleaning."); st.stop()
+    st.warning("No valid dates in dataset."); st.stop()
 
 min_ts, max_ts = pd.to_datetime(df["date"].min()), pd.to_datetime(df["date"].max())
 default_end = max_ts.date()
@@ -450,6 +398,7 @@ sel_regions  = parse_csv_list(qp.get("region",""))  or all_regions
 sel_channels = parse_csv_list(qp.get("channel","")) or all_channels
 sel_segments = parse_csv_list(qp.get("segment","")) or all_segments
 sel_products = parse_csv_list(qp.get("product","")) or all_products
+
 def _to_date(s, default):
     try: return pd.to_datetime(s).date()
     except Exception: return default
@@ -458,16 +407,12 @@ end_default   = _to_date(qp.get("end",""),   default_end)
 
 with st.sidebar:
     st.header("Filters")
-    with st.expander("Dimensions", True):
-        regions_sel  = st.multiselect("🌍 Region",  all_regions,  default=sel_regions)
-        channels_sel = st.multiselect("📊 Channel", all_channels, default=sel_channels)
-        segments_sel = st.multiselect("👥 Segment", all_segments, default=sel_segments)
-        products_sel = st.multiselect("📦 Product", all_products, default=sel_products)
-    with st.expander("Date Range", True):
-        date_range = st.date_input("📅", value=(start_default, end_default),
-                                   min_value=min_ts.date(), max_value=max_ts.date())
-    with st.expander("Actions"):
-        st.caption("Download and sharing options at the bottom of the page.")
+    regions_sel  = st.multiselect("🌍 Region",  all_regions,  default=sel_regions)
+    channels_sel = st.multiselect("📊 Channel", all_channels, default=sel_channels)
+    segments_sel = st.multiselect("👥 Segment", all_segments, default=sel_segments)
+    products_sel = st.multiselect("📦 Product", all_products, default=sel_products)
+    date_range = st.date_input("📅 Date Range", value=(start_default, end_default),
+                               min_value=min_ts.date(), max_value=max_ts.date())
 
 if isinstance(date_range, (list, tuple)) and len(date_range)==2:
     start_date, end_date = map(pd.to_datetime, date_range)
@@ -490,9 +435,9 @@ if filtered.empty:
     st.warning("No rows match these filters. Showing all data for context.")
     filtered = df.copy()
 
-# ---------------------------------------------------------
-# KPIs (glass cards)
-# ---------------------------------------------------------
+# -----------------------------------------------------------------------------
+# KPIs
+# -----------------------------------------------------------------------------
 daily = filtered.groupby("date", as_index=False)["revenue"].sum().sort_values("date")
 anoms = detect_anomalies(daily)
 avg_day_rev = float(daily["revenue"].mean()) if not daily.empty else 0.0
@@ -510,6 +455,7 @@ future_sum = float(fc[fc["type"]=="Forecast"]["value"].sum()) if not fc.empty el
 baseline_mean = float(daily["revenue"].tail(30).mean() if len(daily)>=30 else (daily["revenue"].mean() if not daily.empty else 0.0))
 forecast_uplift = float(max(0.0, future_sum - baseline_mean*30))
 
+# Comparisons
 today = daily["date"].max() if not daily.empty else pd.Timestamp.today().normalize()
 last_30_start = today - pd.Timedelta(days=29)
 prev_30_start = today - pd.Timedelta(days=59)
@@ -523,32 +469,34 @@ total_rev_prev = float(prev30["revenue"].sum()) if not prev30.empty else None
 delta_total_rev = pct_delta(total_rev_30, total_rev_prev)
 avg_rev_30 = float(last30["revenue"].mean()) if not last30.empty else float(daily["revenue"].mean() if not daily.empty else 0.0)
 avg_rev_prev = float(prev30["revenue"].mean()) if not prev30.empty else None
-anomaly_days = int(len(anoms)); anomaly_pct = (anomaly_days / max(1, len(daily))) * 100.0
+anomaly_days = int(len(anoms))
+anomaly_pct = (anomaly_days / max(1, len(daily))) * 100.0
 top_ch = by_channel.sort_values("revenue", ascending=False).head(1)
 top_channel_name = (top_ch["channel"].iloc[0] if not top_ch.empty else "—")
 top_channel_share = float(top_ch["revenue"].iloc[0] / max(1.0, by_channel["revenue"].sum()) * 100.0) if not top_ch.empty else 0.0
 
-g1, g2, g3, g4 = st.columns(4)
-with g1:
-    st.markdown(f"<div class='card'><div class='kpi-title'>Total Revenue (30d)</div><div class='kpi-value'>{money(total_rev_30)}</div><span class='kpi-delta {'pos' if (delta_total_rev or 0)>=0 else 'neg'}'>{(delta_total_rev or 0):+.1f}% vs prev</span></div>", unsafe_allow_html=True)
-with g2:
+# KPI row (cards)
+c1, c2, c3, c4 = st.columns(4)
+with c1:
+    st.markdown(f"<div class='card'><div class='kpi-title'>Total Revenue (30d)</div><div class='kpi-value'>{money(total_rev_30)}</div><div class='small'>{delta_total_rev:+.1f}% vs prev</div></div>", unsafe_allow_html=True)
+with c2:
     delta_avg = pct_delta(avg_rev_30, avg_rev_prev or avg_rev_30)
-    st.markdown(f"<div class='card'><div class='kpi-title'>Avg Daily Revenue (30d)</div><div class='kpi-value'>{money(avg_rev_30)}</div><span class='kpi-delta {'pos' if (delta_avg or 0)>=0 else 'neg'}'>{(delta_avg or 0):+.1f}% vs prev</span></div>", unsafe_allow_html=True)
-with g3:
-    st.markdown(f"<div class='card'><div class='kpi-title'>Anomaly Days</div><div class='kpi-value'>{anomaly_days}</div><div class='muted'>{anomaly_pct:.1f}% of days</div></div>", unsafe_allow_html=True)
-with g4:
-    st.markdown(f"<div class='card'><div class='kpi-title'>Top Channel</div><div class='kpi-value'>{top_channel_name}</div><div class='muted'>{top_channel_share:.1f}% share</div></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='card'><div class='kpi-title'>Avg Daily Revenue (30d)</div><div class='kpi-value'>{money(avg_rev_30)}</div><div class='small'>{delta_avg:+.1f}% vs prev</div></div>", unsafe_allow_html=True)
+with c3:
+    st.markdown(f"<div class='card'><div class='kpi-title'>Anomaly Days</div><div class='kpi-value'>{anomaly_days}</div><div class='small'>{anomaly_pct:.1f}% of days</div></div>", unsafe_allow_html=True)
+with c4:
+    st.markdown(f"<div class='card'><div class='kpi-title'>Top Channel</div><div class='kpi-value'>{top_channel_name}</div><div class='small'>{top_channel_share:.1f}% share</div></div>", unsafe_allow_html=True)
 
-k1,k2,k3 = st.columns(3)
-with k1: st.markdown(f"<div class='card'><div class='kpi-title'>Recoverable (Anomalies)</div><div class='kpi-value'>{money(potential_loss)}</div></div>", unsafe_allow_html=True)
-with k2: st.markdown(f"<div class='card'><div class='kpi-title'>Upsell Potential</div><div class='kpi-value'>{money(upsell_potential)}</div></div>", unsafe_allow_html=True)
-with k3: st.markdown(f"<div class='card'><div class='kpi-title'>30d Forecast Uplift</div><div class='kpi-value'>{money(forecast_uplift)}</div></div>", unsafe_allow_html=True)
+c5, c6, c7 = st.columns(3)
+with c5: st.markdown(f"<div class='card'><div class='kpi-title'>Recoverable (Anomalies)</div><div class='kpi-value'>{money(potential_loss)}</div></div>", unsafe_allow_html=True)
+with c6: st.markdown(f"<div class='card'><div class='kpi-title'>Upsell Potential</div><div class='kpi-value'>{money(upsell_potential)}</div></div>", unsafe_allow_html=True)
+with c7: st.markdown(f"<div class='card'><div class='kpi-title'>30d Forecast Uplift</div><div class='kpi-value'>{money(forecast_uplift)}</div></div>", unsafe_allow_html=True)
 
-st.markdown("<hr class='div'/>", unsafe_allow_html=True)
+st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 
-# ---------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Recovery Moves
-# ---------------------------------------------------------
+# -----------------------------------------------------------------------------
 st.subheader("💡 Top Recovery Moves")
 moves=[]
 if potential_loss>0: moves.append(f"Plug anomaly days → recover ~{money(potential_loss)} (pricing/promos, billing, ops).")
@@ -559,13 +507,14 @@ if forecast_uplift>0: moves.append(f"Prep capacity & promos for next 30 days →
 if not moves: moves=["🎉 No major gaps detected — focus on targeted retention & upsell."]
 st.markdown("\n".join([f"- **{i}. {m}**" for i,m in enumerate(moves,1)]))
 
-st.markdown("<hr class='div'/>", unsafe_allow_html=True)
+st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 
-# ---------------------------------------------------------
-# Charts (Tabbed)
-# ---------------------------------------------------------
-tab_trend, tab_dist, tab_forecast = st.tabs(["📈 Trend & Anomalies","📊 Distribution","🔮 Forecast"])
-with tab_trend:
+# -----------------------------------------------------------------------------
+# Charts
+# -----------------------------------------------------------------------------
+a, b = st.columns([2,1])
+with a:
+    st.subheader("Revenue Trend & Anomalies")
     base = alt.Chart(daily).encode(x=alt.X("date:T", title="Date"))
     line = base.mark_line(color=PALETTE["primary"]).encode(
         y=alt.Y("revenue:Q", title="Revenue ($)", axis=alt.Axis(format="~s")),
@@ -575,83 +524,75 @@ with tab_trend:
         pts = alt.Chart(anoms).mark_point(size=85, filled=True, color=PALETTE["danger"]).encode(
             x="date:T", y="revenue:Q", tooltip=["date:T", alt.Tooltip("revenue:Q", format=",.0f")]
         )
-        st.altair_chart((line+pts).properties(height=380), use_container_width=True)
+        st.altair_chart((line+pts).properties(height=360), use_container_width=True)
     else:
-        st.altair_chart(line.properties(height=380), use_container_width=True)
+        st.altair_chart(line.properties(height=360), use_container_width=True)
+with b:
+    st.subheader("Revenue by Channel")
+    by_ch = filtered.groupby("channel", as_index=False)["revenue"].sum().sort_values("revenue", ascending=False)
+    st.altair_chart(alt.Chart(by_ch).mark_bar().encode(
+        x=alt.X("revenue:Q", title="Revenue ($)", axis=alt.Axis(format="~s")),
+        y=alt.Y("channel:N", sort="-x"),
+        tooltip=["channel:N", alt.Tooltip("revenue:Q", format=",.0f")]
+    ).properties(height=360), use_container_width=True)
 
-with tab_dist:
-    c1, c2 = st.columns(2)
-    with c1:
-        by_ch = filtered.groupby("channel", as_index=False)["revenue"].sum().sort_values("revenue", ascending=False)
-        st.markdown("<div class='section-title'>Revenue by Channel</div>", unsafe_allow_html=True)
-        st.altair_chart(alt.Chart(by_ch).mark_bar().encode(
-            x=alt.X("revenue:Q", title="Revenue ($)", axis=alt.Axis(format="~s")),
-            y=alt.Y("channel:N", sort="-x"),
-            tooltip=["channel:N", alt.Tooltip("revenue:Q", format=",.0f")]
-        ).properties(height=300), use_container_width=True)
-    with c2:
-        by_rg = filtered.groupby("region", as_index=False)["revenue"].sum().sort_values("revenue", ascending=False)
-        st.markdown("<div class='section-title'>Revenue by Region</div>", unsafe_allow_html=True)
-        st.altair_chart(alt.Chart(by_rg).mark_bar().encode(
-            x=alt.X("region:N"), y=alt.Y("revenue:Q", axis=alt.Axis(format="~s")),
-            tooltip=["region:N", alt.Tooltip("revenue:Q", format=",.0f")]
-        ).properties(height=300), use_container_width=True)
+st.subheader("Revenue by Region")
+by_rg = filtered.groupby("region", as_index=False)["revenue"].sum().sort_values("revenue", ascending=False)
+st.altair_chart(alt.Chart(by_rg).mark_bar().encode(
+    x=alt.X("region:N", title="Region"),
+    y=alt.Y("revenue:Q", title="Revenue ($)", axis=alt.Axis(format="~s")),
+    tooltip=["region:N", alt.Tooltip("revenue:Q", format=",.0f")]
+).properties(height=320), use_container_width=True)
 
-with tab_forecast:
-    st.markdown("<div class='section-title'>30-Day Revenue Forecast</div>", unsafe_allow_html=True)
-    if fc.empty:
-        st.info("Not enough history to forecast yet.")
-    else:
-        st.altair_chart(alt.Chart(fc).mark_line(point=True).encode(
-            x=alt.X("date:T", title="Date"),
-            y=alt.Y("value:Q", title="Revenue ($)", axis=alt.Axis(format="~s")),
-            color="type:N",
-            tooltip=["type:N", "date:T", alt.Tooltip("value:Q", format=",.0f")]
-        ).properties(height=380), use_container_width=True)
+st.subheader("30-Day Revenue Forecast " + ("(Prophet)" if PROPHET_OK and not fc_prophet.empty else "(Fallback)"))
+if fc.empty:
+    st.info("Not enough history to forecast yet.")
+else:
+    st.altair_chart(alt.Chart(fc).mark_line(point=True).encode(
+        x=alt.X("date:T", title="Date"),
+        y=alt.Y("value:Q", title="Revenue ($)", axis=alt.Axis(format="~s")),
+        color="type:N",
+        tooltip=["type:N", "date:T", alt.Tooltip("value:Q", format=",.0f")]
+    ).properties(height=360), use_container_width=True)
 
-st.markdown("<hr class='div'/>", unsafe_allow_html=True)
+st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 
-# ---------------------------------------------------------
-# ML & DL (cards)
-# ---------------------------------------------------------
+# -----------------------------------------------------------------------------
+# ML & DL
+# -----------------------------------------------------------------------------
 ml1, ml2 = st.columns(2)
 with ml1:
+    st.subheader("🤖 Churn Model")
     model_churn, acc_xgb = train_churn_model(filtered)
-    st.markdown("<div class='card'><div class='section-title'>🤖 Churn Model</div>", unsafe_allow_html=True)
     if model_churn is None:
-        st.markdown("<span class='muted'>Not enough rows/variance to train.</span>", unsafe_allow_html=True)
+        st.caption("Not enough rows/variance to train.")
     else:
-        st.markdown(f"<b>Accuracy:</b> {acc_xgb:.2f} {'(XGBoost)' if XGB_OK else '(GBClassifier)'}", unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+        st.success(f"Accuracy: {acc_xgb:.2f} {'(XGBoost)' if XGB_OK else '(GBClassifier)'}")
 
 with ml2:
+    st.subheader("📈 Upsell Model")
     model_upsell, acc_lgb = train_upsell_model(filtered)
-    st.markdown("<div class='card'><div class='section-title'>📈 Upsell Model</div>", unsafe_allow_html=True)
     if model_upsell is None:
-        st.markdown("<span class='muted'>Not enough rows/variance to train.</span>", unsafe_allow_html=True)
+        st.caption("Not enough rows/variance to train.")
     else:
-        st.markdown(f"<b>Accuracy:</b> {acc_lgb:.2f} {'(LightGBM)' if LGB_OK else '(GBClassifier)'}", unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+        st.success(f"Accuracy: {acc_lgb:.2f} {'(LightGBM)' if LGB_OK else '(GBClassifier)'}")
 
 dl1, dl2 = st.columns(2)
 with dl1:
+    st.subheader("🧠 PyTorch LSTM (demo)")
     series = filtered.groupby("date")["revenue"].sum().sort_index()
     m_lstm, lstm_loss = train_lstm_pytorch(series)
-    st.markdown("<div class='card'><div class='section-title'>🧠 PyTorch LSTM (demo)</div>", unsafe_allow_html=True)
     if m_lstm is None:
-        st.markdown("<span class='muted'>Unavailable (library missing or too few points).</span>", unsafe_allow_html=True)
+        st.caption("Unavailable (library missing or too few points).")
     else:
-        st.markdown(f"<b>Final loss:</b> {lstm_loss:.4f}", unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-
+        st.success(f"Final loss: {lstm_loss:.4f}")
 with dl2:
+    st.subheader("🧪 TensorFlow Dense (demo)")
     m_tf, tf_acc = train_tf_dense(filtered)
-    st.markdown("<div class='card'><div class='section-title'>🧪 TensorFlow Dense (demo)</div>", unsafe_allow_html=True)
     if m_tf is None:
-        st.markdown("<span class='muted'>Unavailable (library missing or too few rows).</span>", unsafe_allow_html=True)
+        st.caption("Unavailable (library missing or too few rows).")
     else:
-        st.markdown(f"<b>Accuracy:</b> {tf_acc:.2f}", unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+        st.success(f"Accuracy: {tf_acc:.2f}")
 
 st.subheader("🚨 Anomaly Days")
 if anoms.empty:
@@ -659,11 +600,11 @@ if anoms.empty:
 else:
     st.dataframe(anoms[["date","revenue","anomaly_score"]].sort_values("date", ascending=False), use_container_width=True)
 
-st.markdown("<hr class='div'/>", unsafe_allow_html=True)
+st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 
-# ---------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Export & Share
-# ---------------------------------------------------------
+# -----------------------------------------------------------------------------
 st.subheader("⬇️ Export & Share")
 kpi_df = pd.DataFrame([
     {"metric":"Total Revenue (30d)","value": total_rev_30},
@@ -686,25 +627,28 @@ with cD:
     share_url = "?" + "&".join([f"{k}={','.join(v) if isinstance(v,list) else v}" for k,v in cur_qp.items()])
     st.text_input("Share this exact view (copy URL)", value=share_url)
 
-if st.button("📄 Download KPI PDF"):
-    pdf_bytes = export_kpi_pdf(
-        {
-            "Total Revenue (30d)": money(total_rev_30),
-            "Avg Daily Revenue (30d)": money(avg_rev_30),
-            "Anomaly Days": f"{anomaly_days} ({(anomaly_pct):.1f}% of days)",
-            "Top Channel": f"{top_channel_name} ({top_channel_share:.1f}% share)",
-            "Recoverable (Anomalies)": money(potential_loss),
-            "Upsell Potential": money(upsell_potential),
-            "30-day Forecast Uplift": money(forecast_uplift),
-        }, moves
-    )
-    st.download_button("Download KPI PDF", data=pdf_bytes, file_name="kpi_report.pdf", mime="application/pdf")
+if FPDF_OK:
+    if st.button("📄 Download KPI PDF"):
+        pdf_bytes = export_kpi_pdf(
+            {
+                "Total Revenue (30d)": money(total_rev_30),
+                "Avg Daily Revenue (30d)": money(avg_rev_30),
+                "Anomaly Days": f"{anomaly_days} ({anomaly_pct:.1f}% of days)",
+                "Top Channel": f"{top_channel_name} ({top_channel_share:.1f}% share)",
+                "Recoverable (Anomalies)": money(potential_loss),
+                "Upsell Potential": money(upsell_potential),
+                "30-day Forecast Uplift": money(forecast_uplift),
+            }, moves
+        )
+        st.download_button("Download KPI PDF", data=pdf_bytes, file_name="kpi_report.pdf", mime="application/pdf")
+else:
+    st.info("Install 'fpdf' to enable PDF export.")
 
-st.markdown("<hr class='div'/>", unsafe_allow_html=True)
+st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 
-# ---------------------------------------------------------
-# Simple KB + Assistant (unchanged logic, cleaner UI)
-# ---------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Simple KB + Assistant (unchanged logic, safer UI)
+# -----------------------------------------------------------------------------
 if "kb" not in st.session_state:
     st.session_state.kb = {"docs": [], "chunks": [], "doc_map": []}
 
@@ -715,7 +659,8 @@ def extract_text_from_file(uploaded):
             reader = PdfReader(io.BytesIO(data))
             return "\n".join([p.extract_text() or "" for p in reader.pages])
         except Exception:
-            return data.decode("utf-8", errors="ignore")
+            try: return data.decode("utf-8", errors="ignore")
+            except Exception: return ""
     try:
         return data.decode("utf-8", errors="ignore")
     except Exception:
@@ -760,8 +705,7 @@ def crawl_and_add(urls, max_pages=5):
             r = requests.get(u, timeout=8, headers={"User-Agent":"AI-RevBot"})
             soup = BeautifulSoup(r.text, "html.parser")
             for tag in soup(["script","style","noscript"]): tag.extract()
-            text = soup.get_text(" ")
-            chs = chunk_text(text); doc_id = str(uuid.uuid4())
+            text = soup.get_text(" "); chs = chunk_text(text); doc_id = str(uuid.uuid4())
             st.session_state.kb["docs"].append({"id":doc_id,"name":u,"chunks":chs})
             st.session_state.kb["chunks"].extend(chs); st.session_state.kb["doc_map"].extend([doc_id]*len(chs))
             added += 1
@@ -809,8 +753,7 @@ msg = st.chat_input("Type your question…")
 if msg:
     st.session_state.chat.append({"role":"user","content":msg})
     with st.chat_message("user"): st.markdown(msg)
-    # Compose summary + KB
-    # (Fast, local response – replace with real RAG later)
+    # quick, local data-aware reply
     daily = filtered.groupby("date", as_index=False)["revenue"].sum().sort_values("date")
     anoms = detect_anomalies(daily)
     avg_day_rev = float(daily["revenue"].mean()) if not daily.empty else 0.0
@@ -832,5 +775,5 @@ if msg:
     st.session_state.chat.append({"role":"assistant","content":reply})
     with st.chat_message("assistant"): st.markdown(reply)
 
-st.markdown("<hr class='div'/>", unsafe_allow_html=True)
-st.markdown("<div class='cta'><b>Want a private pilot?</b> Upload your latest CSV and docs — we’ll surface your top recovery moves in minutes.</div>", unsafe_allow_html=True)
+st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
+st.caption("Tip: switch themes from the top-right toggle. No overlays/sticky bars used, so all clicks work reliably.")
