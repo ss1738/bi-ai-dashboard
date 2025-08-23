@@ -1,576 +1,534 @@
-# AI Revenue Recovery – Stable All-in-One (Filters Safe, Dates Safe, URL Sync, KPIs, Charts)
-# Run: streamlit run streamlit_app.py
+# streamlit_app.py
 
-import os, sqlite3, io, json, re, uuid
-from datetime import datetime, timedelta
+# --- Core Libraries ---
 import streamlit as st
 import pandas as pd
 import numpy as np
-import altair as alt
+from datetime import datetime, timedelta
+import urllib.parse
+import base64
+import sqlite3
+import io
 
-# Optional dependencies (all guarded)
-PLOTLY_OK = True
-try:
-    import plotly.express as px
-    import plotly.graph_objects as go
-except Exception:
-    PLOTLY_OK = False
+# --- Plotting ---
+import plotly.express as px
+import plotly.graph_objects as go
 
-SK_OK = True
-try:
-    from sklearn.ensemble import IsolationForest
-except Exception:
-    SK_OK = False
-    IsolationForest = None
+# --- Machine Learning (with optional imports) ---
+from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
 
-PROPHET_OK = True
+# Attempt to import optional heavy libraries
 try:
     from prophet import Prophet
-except Exception:
-    PROPHET_OK = False
+    PROPHET_INSTALLED = True
+except ImportError:
+    PROPHET_INSTALLED = False
 
-# ---------------------------------------------------------------------
-# Page config + crisp UI
-# ---------------------------------------------------------------------
-st.set_page_config(page_title="AI Revenue Recovery", page_icon="💰", layout="wide")
 try:
-    alt.data_transformers.disable_max_rows()
-except Exception:
-    pass
+    import xgboost as xgb
+    XGBOOST_INSTALLED = True
+except ImportError:
+    XGBOOST_INSTALLED = False
+    
+try:
+    import lightgbm as lgb
+    LIGHTGBM_INSTALLED = True
+except ImportError:
+    LIGHTGBM_INSTALLED = False
 
-st.markdown("""
-<style>
-  html, body, .stApp { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
-  * { transform: none !important; filter: none !important; backface-visibility: hidden; }
-  .hero { padding:1rem 1.2rem; border-radius:14px; background:linear-gradient(135deg,#6366F1,#EC4899); color:#fff; box-shadow:0 6px 18px rgba(0,0,0,.12);}
-  .card { background:#fff; border:1px solid #E5E7EB; border-radius:12px; padding:.9rem 1rem; }
-  .kpi-title { font-size:.86rem; color:#6B7280; font-weight:600; margin-bottom:.2rem; }
-  .kpi-value { font-size:1.5rem; font-weight:800; color:#111827; }
-  .divider { height:1px; background:#E5E7EB; margin:1rem 0; }
-</style>
-""", unsafe_allow_html=True)
+# --- PDF Export ---
+try:
+    from fpdf import FPDF
+    FPDF_INSTALLED = True
+except ImportError:
+    FPDF_INSTALLED = False
 
-# ---------------------------------------------------------------------
-# Simple utils
-# ---------------------------------------------------------------------
-DB_PATH = "sales.db"
+#==============================================================================
+# PAGE CONFIGURATION
+#==============================================================================
+st.set_page_config(
+    page_title="AI Revenue Recovery Dashboard",
+    page_icon="💡",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-def money(x):
-    try: return f"${float(x):,.0f}"
-    except: return "$0"
+#==============================================================================
+# HELPER FUNCTIONS
+#==============================================================================
 
-def read_query_params():
-    try: return st.query_params           # Streamlit >= 1.32
-    except Exception: return st.experimental_get_query_params()
-
-def set_query_params(**kwargs):
-    try:
-        qp = st.query_params
-        for k, v in kwargs.items():
-            if v is None:
-                if k in qp: del qp[k]
-            else:
-                qp[k] = v
-    except Exception:
-        st.experimental_set_query_params(**{k: v for k, v in kwargs.items() if v is not None})
-
-# ---------------------------------------------------------------------
-# DB helpers (optional; app runs fine without an existing DB)
-# ---------------------------------------------------------------------
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""CREATE TABLE IF NOT EXISTS sales_data(
-      date TEXT, region TEXT, channel TEXT, segment TEXT, product TEXT, revenue REAL, customers INTEGER
-    )""")
-    conn.close()
-
-@st.cache_data(show_spinner=False)
-def load_from_db(db_path: str) -> pd.DataFrame:
-    if not os.path.exists(db_path):
-        return pd.DataFrame(columns=["date","region","channel","segment","product","revenue","customers"])
-    conn = sqlite3.connect(db_path)
-    df = pd.read_sql("SELECT * FROM sales_data", conn)
-    conn.close()
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df = df.dropna(subset=["date"]).copy()
+def generate_sample_data(domain="Sports Apparel"):
+    """Generates a realistic sample DataFrame based on a business domain."""
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=730)
+    dates = pd.to_datetime(pd.date_range(start=start_date, end=end_date, freq='D'))
+    
+    data = {'date': np.random.choice(dates, size=1500)}
+    
+    if domain == "Sports Apparel":
+        regions = ['North America', 'Europe', 'Asia', 'South America']
+        channels = ['Online', 'Retail', 'Outlet']
+        products = ['Running Shoes', 'Yoga Pants', 'Team Jerseys', 'Fitness Trackers']
+        data.update({
+            'region': np.random.choice(regions, size=1500, p=[0.4, 0.3, 0.2, 0.1]),
+            'channel': np.random.choice(channels, size=1500, p=[0.6, 0.3, 0.1]),
+            'product': np.random.choice(products, size=1500),
+            'revenue': np.random.uniform(50, 800, size=1500),
+            'customers': np.random.randint(1, 50, size=1500)
+        })
+    elif domain == "Video Games":
+        regions = ['NA', 'EU', 'APAC', 'LATAM']
+        channels = ['Steam', 'PlayStation Store', 'Xbox Store', 'Direct']
+        products = ['Action RPG', 'Strategy', 'Indie Puzzle', 'Subscription']
+        data.update({
+            'region': np.random.choice(regions, size=1500, p=[0.5, 0.3, 0.15, 0.05]),
+            'channel': np.random.choice(channels, size=1500, p=[0.4, 0.25, 0.25, 0.1]),
+            'product': np.random.choice(products, size=1500),
+            'revenue': np.random.uniform(10, 200, size=1500),
+            'customers': np.random.randint(10, 1000, size=1500)
+        })
+    elif domain == "Music Streaming":
+        regions = ['Global']
+        channels = ['Premium', 'Ad-Supported', 'Family Plan']
+        products = ['Subscription', 'Merch', 'Concert Tickets']
+        data.update({
+            'region': np.random.choice(regions, size=1500),
+            'channel': np.random.choice(channels, size=1500, p=[0.6, 0.3, 0.1]),
+            'product': np.random.choice(products, size=1500),
+            'revenue': np.random.uniform(5, 50, size=1500),
+            'customers': np.random.randint(1, 5, size=1500)
+        })
+    
+    df = pd.DataFrame(data)
+    df['date'] = pd.to_datetime(df['date'])
+    # Introduce some anomalies
+    anomaly_indices = df.sample(frac=0.03).index
+    df.loc[anomaly_indices, 'revenue'] *= np.random.choice([0.1, 0.2, 3, 5])
     return df
 
-def save_to_db(df):
-    conn = sqlite3.connect(DB_PATH)
-    df.to_sql("sales_data", conn, if_exists="replace", index=False)
-    conn.close()
+@st.cache_data
+def load_data(uploaded_file):
+    """Loads data from an uploaded CSV file."""
+    if uploaded_file:
+        try:
+            df = pd.read_csv(uploaded_file)
+            df['date'] = pd.to_datetime(df['date'])
+            return df
+        except Exception as e:
+            st.error(f"Error loading data: {e}")
+            return None
+    return None
 
-# ---------------------------------------------------------------------
-# Sample data (fallback)
-# ---------------------------------------------------------------------
-DEFAULT_CHANNELS = ["Online","Retail","Wholesale"]
-DEFAULT_REGIONS  = ["AMER","EMEA","APAC"]
-DEFAULT_SEGMENTS = ["Enterprise","Mid-Market","SMB","Startup"]
+def safe_multiselect(label, options, default, key, query_params):
+    """Creates a multiselect box with defaults clamped to available options."""
+    # Get defaults from query params if available
+    qp_defaults = query_params.get(key, [])
+    
+    # Ensure defaults from query params are valid options
+    valid_qp_defaults = [opt for opt in qp_defaults if opt in options]
+    
+    # If there are valid query param defaults, use them. Otherwise use the function's default.
+    final_defaults = valid_qp_defaults if valid_qp_defaults else default
+    
+    # Clamp the final defaults to ensure they are in the options list
+    clamped_defaults = [d for d in final_defaults if d in options]
+    
+    return st.multiselect(label, options, default=clamped_defaults, key=key)
+
+def update_query_params():
+    """Updates URL query parameters based on current widget states."""
+    params = {}
+    for key, value in st.session_state.items():
+        if key not in ['query_params', 'df', 'uploaded_file'] and value:
+            params[key] = value
+    st.query_params.from_dict(params)
+
+def initialize_db(conn):
+    """Initializes the SQLite database and table."""
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sales_data (
+            date TEXT,
+            region TEXT,
+            channel TEXT,
+            product TEXT,
+            revenue REAL,
+            customers INTEGER,
+            upload_timestamp TEXT,
+            UNIQUE(date, region, channel, product, revenue, customers)
+        )
+    """)
+    conn.commit()
+
+def insert_data(conn, df):
+    """Inserts DataFrame data into the SQLite database, avoiding duplicates."""
+    cursor = conn.cursor()
+    df_to_insert = df.copy()
+    df_to_insert['upload_timestamp'] = datetime.now().isoformat()
+    
+    tuples = [tuple(x) for x in df_to_insert.to_numpy()]
+    
+    # Use INSERT OR IGNORE to prevent adding duplicate rows
+    cursor.executemany("""
+        INSERT OR IGNORE INTO sales_data 
+        (date, region, channel, product, revenue, customers, upload_timestamp) 
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, tuples)
+    
+    conn.commit()
+    return cursor.rowcount
+
+def create_download_link(val, filename):
+    """Creates a download link for a file."""
+    b64 = base64.b64encode(val)
+    return f'<a href="data:application/octet-stream;base64,{b64.decode()}" download="{filename}">Download {filename}</a>'
+
+#==============================================================================
+# CACHED ML & DATA PROCESSING FUNCTIONS
+#==============================================================================
 
 @st.cache_data
-def make_sample_data(seed=42, days=90) -> pd.DataFrame:
-    np.random.seed(seed)
-    end = datetime.now()
-    dates = pd.date_range(end - timedelta(days=days-1), periods=days, freq="D")
-    products = ["Sports Gear","Video Games","Music Albums","Clothing"]
-    rows = []
-    for d in dates:
-        week_mult = 0.7 if d.weekday() >= 5 else 1.0
-        for rg in DEFAULT_REGIONS:
-            for ch in DEFAULT_CHANNELS:
-                for prod in products:
-                    seg = np.random.choice(DEFAULT_SEGMENTS)
-                    base = {"Sports Gear":1.2,"Video Games":1.1,"Music Albums":0.8,"Clothing":1.0}[prod]
-                    regm = {"AMER":1.15,"EMEA":1.0,"APAC":0.9}[rg]
-                    chm  = {"Online":1.2,"Retail":1.0,"Wholesale":0.85}[ch]
-                    revenue = 5000 * week_mult * base * regm * chm * np.random.normal(1,0.25)
-                    revenue = max(0, revenue)
-                    cust = max(1, int(np.random.poisson(lam=max(1, revenue/200))))
-                    rows.append({"date": d, "region": rg, "channel": ch, "segment": seg, "product": prod,
-                                 "revenue": float(revenue), "customers": int(cust)})
-    return pd.DataFrame(rows)
+def get_anomalies(df, contamination=0.05):
+    """Detects anomalies in revenue using Isolation Forest."""
+    if 'revenue' not in df.columns or df.shape[0] < 2:
+        return df.assign(anomaly=False)
+        
+    ts_data = df[['date', 'revenue']].set_index('date').resample('D').sum().reset_index()
+    features = ts_data[['revenue']]
+    scaler = StandardScaler()
+    scaled_features = scaler.fit_transform(features)
+    
+    model = IsolationForest(contamination=contamination, random_state=42)
+    ts_data['anomaly_score'] = model.fit_predict(scaled_features)
+    ts_data['anomaly'] = ts_data['anomaly_score'] == -1
+    
+    # Map daily anomalies back to original data
+    anomalous_dates = ts_data[ts_data['anomaly']]['date']
+    df['anomaly'] = df['date'].isin(anomalous_dates)
+    return df
 
-# ---------------------------------------------------------------------
-# CSV loader (robust)
-# ---------------------------------------------------------------------
-def coerce_numeric(s): return pd.to_numeric(s, errors="coerce")
+@st.cache_data
+def get_customer_segments(df):
+    """Segments customers using K-Means clustering."""
+    if 'revenue' not in df.columns or 'customers' not in df.columns or df.shape[0] < 3:
+        return df.assign(segment='N/A')
+        
+    # Aggregate data to get customer-level features
+    cust_data = df.groupby('customers').agg(
+        total_revenue=('revenue', 'sum'),
+        purchase_frequency=('date', 'count')
+    ).reset_index()
 
-def load_csv(file) -> pd.DataFrame:
-    df = pd.read_csv(file)
-    cols = {c.lower().strip(): c for c in df.columns}
+    if cust_data.shape[0] < 3:
+        return df.assign(segment='N/A')
 
-    # Date
-    for cand in ["date","order_date","created_at","day"]:
-        if cand in cols:
-            df["date"] = pd.to_datetime(df[cols[cand]], errors="coerce"); break
-    else:
-        raise ValueError("CSV must include 'date' (or order_date/created_at/day).")
-
-    # Categorical
-    df["region"]  = df[cols["region"]].astype(str)  if "region"  in cols else "Unknown"
-    df["channel"] = df[cols["channel"]].astype(str) if "channel" in cols else "Unknown"
-    df["segment"] = df[cols["segment"]].astype(str) if "segment" in cols else "All"
-    df["product"] = df[cols["product"]].astype(str) if "product" in cols else "All"
-
-    # Revenue
-    if "revenue" in cols:
-        df["revenue"] = coerce_numeric(df[cols["revenue"]])
-    elif "price" in cols and "quantity" in cols:
-        df["revenue"] = coerce_numeric(df[cols["price"]]) * coerce_numeric(df[cols["quantity"]])
-    else:
-        raise ValueError("CSV must include 'revenue' or ('price' and 'quantity').")
-
-    # Customers
-    if "customers" in cols:
-        df["customers"] = coerce_numeric(df[cols["customers"]]).fillna(1).astype(int)
-    else:
-        df["customers"] = np.maximum(1, (df["revenue"]/np.maximum(1.0, df["revenue"].median()/5)).round()).astype(int)
-
-    df = df.dropna(subset=["date","revenue"]).copy()
-    df["revenue"] = df["revenue"].clip(lower=0)
-    return df[["date","region","channel","segment","product","revenue","customers"]]
-
-# ---------------------------------------------------------------------
-# Anomalies + Forecast (guarded fallbacks)
-# ---------------------------------------------------------------------
-def detect_anomalies(daily_df: pd.DataFrame) -> pd.DataFrame:
-    dd = daily_df.sort_values("date").copy()
-    if dd.empty or "revenue" not in dd:
-        return dd.head(0)
-
-    if SK_OK:
-        x = dd.copy()
-        x["day_of_week"] = x["date"].dt.dayofweek
-        x["month"] = x["date"].dt.month
-        x["revenue_lag1"] = x["revenue"].shift(1)
-        x["revenue_lag7"] = x["revenue"].shift(7)
-        x = x.dropna()
-        if x.empty: return x
-        feats = x[["revenue","day_of_week","month","revenue_lag1","revenue_lag7"]].values
-        iso = IsolationForest(contamination=0.1, random_state=42)
-        x["anomaly"] = iso.fit_predict(feats)
-        x["anomaly_score"] = iso.score_samples(feats)
-        return x[x["anomaly"] == -1][["date","revenue","anomaly_score"]].copy()
-
-    # Fallback: rolling z-score
-    r = dd.copy()
-    r["rev_ma7"] = r["revenue"].rolling(7, min_periods=3).mean()
-    r["rev_sd7"] = r["revenue"].rolling(7, min_periods=3).std().replace(0, np.nan)
-    r["z"] = (r["revenue"] - r["rev_ma7"]) / r["rev_sd7"]
-    out = r[(r["z"].abs() > 2.5) & r["rev_sd7"].notna()].copy()
-    out["anomaly_score"] = -out["z"].abs()
-    return out[["date","revenue","anomaly_score"]]
-
-def forecast_prophet(daily: pd.DataFrame, days=30) -> pd.DataFrame:
-    if not PROPHET_OK or daily.empty: return pd.DataFrame()
-    df = daily.rename(columns={"date":"ds","revenue":"y"})
-    try:
-        m = Prophet()
-        m.fit(df)
-        future = m.make_future_dataframe(periods=days)
-        fc = m.predict(future)
-        out = fc[["ds","yhat"]].copy()
-        out["type"] = np.where(out["ds"]<=df["ds"].max(),"Historical","Forecast")
-        out = out.rename(columns={"ds":"date","yhat":"value"})
-        return out
-    except Exception:
-        return pd.DataFrame()
-
-def forecast_fallback(daily: pd.DataFrame, days=30) -> pd.DataFrame:
-    if daily.empty: return pd.DataFrame()
-    ser = daily.set_index("date")["revenue"].asfreq("D").fillna(method="ffill")
-    df = ser.reset_index().rename(columns={"revenue":"revenue"})
-    df["day_num"] = (df["date"] - df["date"].min()).dt.days
-    # simple linear trend
-    if df["day_num"].nunique() >= 2:
-        X = df["day_num"].values; y = df["revenue"].values
-        A = np.vstack([X, np.ones_like(X)]).T
-        slope, intercept = np.linalg.lstsq(A, y, rcond=None)[0]
-        fut = np.arange(df["day_num"].max()+1, df["day_num"].max()+days+1)
-        trend = slope * fut + intercept
-    else:
-        trend = np.repeat(df["revenue"].iloc[-1], days)
-    # weekly seasonal naive
-    dow_mean = df.groupby(df["date"].dt.weekday)["revenue"].mean()
-    future_dates = pd.date_range(df["date"].max()+timedelta(days=1), periods=days)
-    seas = np.array([dow_mean.get(d.weekday(), df["revenue"].mean()) for d in future_dates])
-    pred = np.maximum(0.0, (trend + seas)/2.0)
-    hist = df[["date","revenue"]].rename(columns={"revenue":"value"}); hist["type"]="Historical"
-    fc = pd.DataFrame({"date":future_dates,"value":pred,"type":"Forecast"})
-    return pd.concat([hist, fc], ignore_index=True)
-
-# ---------------------------------------------------------------------
-# Header + Hero
-# ---------------------------------------------------------------------
-st.markdown("<h2>💰 AI Revenue Recovery</h2>", unsafe_allow_html=True)
-st.markdown("<div class='hero'>Upload your sales CSV → Filter → KPIs, anomalies, forecast, and charts.</div>", unsafe_allow_html=True)
-
-# ---------------------------------------------------------------------
-# Upload / Load
-# ---------------------------------------------------------------------
-init_db()
-with st.expander("📂 Upload CSV (or use sample data)", expanded=False):
-    up = st.file_uploader("CSV with columns: date, region, channel, segment, product, revenue, customers", type=["csv"])
-    colu1, colu2 = st.columns(2)
-    with colu1:
-        if up is not None:
-            try:
-                df_up = load_csv(up)
-                save_to_db(df_up)
-                st.success("✅ Data uploaded & saved")
-                st.cache_data.clear()  # clear DB cache
-            except Exception as e:
-                st.error(f"CSV error: {e}")
-    with colu2:
-        st.download_button("Download sample CSV", make_sample_data().to_csv(index=False),
-                           file_name="sample_revenue_data.csv", mime="text/csv")
-
-# Load source of truth (DB or sample)
-df = load_from_db(DB_PATH)
-if df.empty:
-    df = make_sample_data()  # fallback
-    try:
-        save_to_db(df)
-    except Exception:
-        pass
-
-# Ensure types
-df["date"] = pd.to_datetime(df["date"], errors="coerce")
-df = df.dropna(subset=["date"]).copy()
-df["region"]  = df["region"].astype(str)
-df["channel"] = df["channel"].astype(str)
-df["segment"] = df["segment"].astype(str)
-df["product"] = df["product"].astype(str)
-
-# ---------------------------------------------------------------------
-# HARDENED FILTERS (string options, clamped defaults, safe dates)
-# ---------------------------------------------------------------------
-def _parse_csv_list(val):
-    if not val:
-        return []
-    if isinstance(val, list):  # streamlit >=1.32 may return list
-        val = val[0] if val else ""
-    return [x.strip() for x in str(val).split(",") if x.strip()]
-
-def _clamp(defaults, options):
-    if not isinstance(defaults, list):
-        defaults = [defaults] if defaults else []
-    return [d for d in defaults if d in options]
-
-# Options as plain strings
-all_regions  = sorted(df["region"].dropna().astype(str).unique().tolist())
-all_channels = sorted(df["channel"].dropna().astype(str).unique().tolist())
-all_segments = sorted(df["segment"].dropna().astype(str).unique().tolist())
-all_products = sorted(df["product"].dropna().astype(str).unique().tolist())
-# Safety: non-empty lists for widgets
-if not all_regions:  all_regions  = ["—"]
-if not all_channels: all_channels = ["—"]
-if not all_segments: all_segments = ["—"]
-if not all_products: all_products = ["—"]
-
-# Safe date bounds (handle empty robustly)
-if df["date"].isna().all():
-    min_ts = pd.Timestamp(datetime.today().date())
-    max_ts = min_ts
-else:
-    min_ts = pd.to_datetime(df["date"].min())
-    max_ts = pd.to_datetime(df["date"].max())
-# Fallback 60-day window (clamped)
-fallback_start = max((max_ts - pd.Timedelta(days=60)).date(), min_ts.date())
-fallback_end   = max_ts.date()
-
-def _safe_date(val, fb, lo, hi):
-    try:
-        d = pd.to_datetime(val).date()
-    except Exception:
-        d = fb
-    if d < lo: d = lo
-    if d > hi: d = hi
-    return d
-
-qp = read_query_params()
-regions_default  = _clamp(_parse_csv_list(qp.get("region","")),  all_regions)
-channels_default = _clamp(_parse_csv_list(qp.get("channel","")), all_channels)
-segments_default = _clamp(_parse_csv_list(qp.get("segment","")), all_segments)
-products_default = _clamp(_parse_csv_list(qp.get("product","")), all_products)
-start_default    = _safe_date(qp.get("start",""), fallback_start, min_ts.date(), max_ts.date())
-end_default      = _safe_date(qp.get("end",""),   fallback_end,   min_ts.date(), max_ts.date())
-if start_default > end_default:
-    start_default, end_default = end_default, start_default
-
-with st.sidebar:
-    st.header("Filters")
-    regions_sel  = st.multiselect("🌍 Region",  options=all_regions,  default=(regions_default or all_regions),  key="flt_regions")
-    channels_sel = st.multiselect("📊 Channel", options=all_channels, default=(channels_default or all_channels), key="flt_channels")
-    segments_sel = st.multiselect("👥 Segment",  options=all_segments, default=(segments_default or all_segments), key="flt_segments")
-    products_sel = st.multiselect("📦 Product",  options=all_products, default=(products_default or all_products), key="flt_products")
-
-    date_range = st.date_input(
-        "📅 Date Range",
-        value=(start_default, end_default),
-        min_value=min_ts.date(),
-        max_value=max_ts.date(),
-        key="flt_dates"
-    )
-
-    st.markdown("---")
-    use_plotly   = st.toggle("📈 Use Plotly charts", value=PLOTLY_OK, key="opt_plotly")
-    run_forecast = st.toggle("🔮 Forecast (Prophet if available)", value=True, key="opt_fc")
-    apply        = st.button("✅ Apply filters", key="btn_apply")
-
-# Apply or initialize
-if "applied_filters" not in st.session_state or apply:
-    if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
-        start_date, end_date = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1])
-    else:
-        start_date, end_date = min_ts, max_ts
-    st.session_state.applied_filters = {
-        "regions":  regions_sel or all_regions,
-        "channels": channels_sel or all_channels,
-        "segments": segments_sel or all_segments,
-        "products": products_sel or all_products,
-        "start": start_date,
-        "end": end_date,
-        "use_plotly": use_plotly,
-        "run_forecast": run_forecast
-    }
-
-cfg = st.session_state.applied_filters
-regions_sel, channels_sel = cfg["regions"], cfg["channels"]
-segments_sel, products_sel = cfg["segments"], cfg["products"]
-start_date, end_date = cfg["start"], cfg["end"]
-use_plotly, run_forecast = cfg["use_plotly"], cfg["run_forecast"]
-
-# Keep URL in sync (only valid values)
-set_query_params(
-    region=",".join(regions_sel),
-    channel=",".join(channels_sel),
-    segment=",".join(segments_sel),
-    product=",".join(products_sel),
-    start=start_date.date().isoformat(),
-    end=end_date.date().isoformat(),
-)
-
-# Filtered data
-mask = (
-    df["region"].isin(regions_sel)
-    & df["channel"].isin(channels_sel)
-    & df["segment"].isin(segments_sel)
-    & df["product"].isin(products_sel)
-    & df["date"].between(start_date, end_date)
-)
-filtered = df.loc[mask].copy()
-if filtered.empty:
-    st.warning("No rows match these filters. Showing all data.")
-    filtered = df.copy()
-
-# ---------------------------------------------------------------------
-# KPIs
-# ---------------------------------------------------------------------
-daily = filtered.groupby("date", as_index=False)["revenue"].sum().sort_values("date")
-anoms = detect_anomalies(daily)
-avg_day_rev = float(daily["revenue"].mean()) if not daily.empty else 0.0
-potential_loss = float(max(0.0, (avg_day_rev*len(anoms) - anoms["revenue"].sum()) if not anoms.empty else 0.0))
-by_channel = filtered.groupby("channel", as_index=False).agg(revenue=("revenue","sum"), customers=("customers","sum"))
-by_channel["avg_deal_size"] = by_channel["revenue"] / by_channel["customers"].clip(lower=1)
-target_ads = float(by_channel["avg_deal_size"].quantile(0.75)) if not by_channel.empty else 0.0
-upsell_potential = float(((target_ads - by_channel["avg_deal_size"]).clip(lower=0) * by_channel["customers"]).sum()) if target_ads>0 else 0.0
-
-# Forecast
-fc = forecast_prophet(daily, 30) if (run_forecast and PROPHET_OK) else forecast_fallback(daily, 30)
-future_sum = float(fc[fc["type"]=="Forecast"]["value"].sum()) if not fc.empty else 0.0
-baseline_mean = float(daily["revenue"].tail(30).mean() if len(daily)>=30 else (daily["revenue"].mean() if not daily.empty else 0.0))
-forecast_uplift = float(max(0.0, future_sum - baseline_mean*30))
-
-# 30d comps
-today = daily["date"].max() if not daily.empty else pd.Timestamp.today().normalize()
-last_30_start = today - pd.Timedelta(days=29)
-prev_30_start = today - pd.Timedelta(days=59)
-prev_30_end   = today - pd.Timedelta(days=30)
-last30 = daily[(daily["date"] >= last_30_start) & (daily["date"] <= today)]
-prev30 = daily[(daily["date"] >= prev_30_start) & (daily["date"] <= prev_30_end)]
-def pct_delta(cur, prev): 
-    try:
-        return 0.0 if prev in (None, 0) or np.isnan(prev) else 100.0*(cur-prev)/prev
-    except Exception:
-        return 0.0
-total_rev_30 = float(last30["revenue"].sum()) if not last30.empty else float(daily["revenue"].sum() if not daily.empty else 0.0)
-total_rev_prev = float(prev30["revenue"].sum()) if not prev30.empty else None
-delta_total_rev = pct_delta(total_rev_30, total_rev_prev)
-avg_rev_30 = float(last30["revenue"].mean()) if not last30.empty else float(daily["revenue"].mean() if not daily.empty else 0.0)
-avg_rev_prev = float(prev30["revenue"].mean()) if not prev30.empty else None
-anomaly_days = int(len(anoms))
-anomaly_pct = (anomaly_days / max(1, len(daily))) * 100.0
-top_ch = by_channel.sort_values("revenue", ascending=False).head(1)
-top_channel_name = (top_ch["channel"].iloc[0] if not top_ch.empty else "—")
-top_channel_share = float(top_ch["revenue"].iloc[0] / max(1.0, by_channel["revenue"].sum()) * 100.0) if not top_ch.empty else 0.0
-
-# KPI cards
-c1, c2, c3, c4 = st.columns(4)
-with c1:
-    st.markdown(f"<div class='card'><div class='kpi-title'>Total Revenue (30d)</div><div class='kpi-value'>{money(total_rev_30)}</div><div class='kpi-title'>{delta_total_rev:+.1f}% vs prev</div></div>", unsafe_allow_html=True)
-with c2:
-    delta_avg = pct_delta(avg_rev_30, avg_rev_prev or avg_rev_30)
-    st.markdown(f"<div class='card'><div class='kpi-title'>Avg Daily Revenue (30d)</div><div class='kpi-value'>{money(avg_rev_30)}</div><div class='kpi-title'>{delta_avg:+.1f}% vs prev</div></div>", unsafe_allow_html=True)
-with c3:
-    st.markdown(f"<div class='card'><div class='kpi-title'>Anomaly Days</div><div class='kpi-value'>{anomaly_days}</div><div class='kpi-title'>{anomaly_pct:.1f}% of days</div></div>", unsafe_allow_html=True)
-with c4:
-    st.markdown(f"<div class='card'><div class='kpi-title'>Top Channel</div><div class='kpi-value'>{top_channel_name}</div><div class='kpi-title'>{top_channel_share:.1f}% share</div></div>", unsafe_allow_html=True)
-
-c5, c6, c7 = st.columns(3)
-with c5: st.markdown(f"<div class='card'><div class='kpi-title'>Recoverable (Anomalies)</div><div class='kpi-value'>{money(potential_loss)}</div></div>", unsafe_allow_html=True)
-with c6: st.markdown(f"<div class='card'><div class='kpi-title'>Upsell Potential</div><div class='kpi-value'>{money(upsell_potential)}</div></div>", unsafe_allow_html=True)
-with c7: st.markdown(f"<div class='card'><div class='kpi-title'>30d Forecast Uplift</div><div class='kpi-value'>{money(forecast_uplift)}</div></div>", unsafe_allow_html=True)
-
-st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
-
-# Recovery moves
-st.subheader("💡 Top Recovery Moves")
-moves=[]
-if potential_loss>0: moves.append(f"Plug anomaly days → recover ~{money(potential_loss)} (pricing/promos, billing, ops).")
-if upsell_potential>0 and not by_channel.empty:
-    worst = by_channel.nsmallest(1, "avg_deal_size")
-    if not worst.empty: moves.append(f"Lift {worst['channel'].iloc[0]} avg deal size to 75th pct → unlock ~{money(upsell_potential)}.")
-if forecast_uplift>0: moves.append(f"Prep capacity & promos for next 30 days → capture ~{money(forecast_uplift)}.")
-if not moves: moves=["🎉 No major gaps detected — focus on targeted retention & upsell."]
-for i,m in enumerate(moves,1): st.markdown(f"- **{i}. {m}**")
-
-st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
-
-# ---------------------------------------------------------------------
-# Charts (Plotly or Altair)
-# ---------------------------------------------------------------------
-a, b = st.columns([2,1])
-with a:
-    st.subheader("Revenue Trend & Anomalies")
-    if use_plotly and PLOTLY_OK:
-        fig = px.line(daily, x="date", y="revenue", title=None)
-        if not anoms.empty:
-            fig.add_trace(go.Scatter(
-                x=anoms["date"], y=anoms["revenue"], mode="markers",
-                marker=dict(size=9, color="#EF4444"), name="Anomalies"
-            ))
-        fig.update_layout(margin=dict(l=0,r=0,t=0,b=0), height=360)
-        st.plotly_chart(fig, use_container_width=True, config={"responsive": True, "displayModeBar": False})
-    else:
-        base = alt.Chart(daily).encode(x=alt.X("date:T", title="Date"))
-        line = base.mark_line(color="#6366F1").encode(
-            y=alt.Y("revenue:Q", title="Revenue ($)", axis=alt.Axis(format="~s")),
-            tooltip=[alt.Tooltip("date:T"), alt.Tooltip("revenue:Q", format=",.0f")]
-        )
-        if not anoms.empty:
-            pts = alt.Chart(anoms).mark_point(size=85, filled=True, color="#EF4444").encode(
-                x="date:T", y="revenue:Q", tooltip=["date:T", alt.Tooltip("revenue:Q", format=",.0f")]
-            )
-            st.altair_chart((line+pts).properties(height=360), use_container_width=True)
+    features = cust_data[['total_revenue', 'purchase_frequency']]
+    scaler = StandardScaler()
+    scaled_features = scaler.fit_transform(features)
+    
+    kmeans = KMeans(n_clusters=3, random_state=42, n_init='auto')
+    cust_data['segment_id'] = kmeans.fit_predict(scaled_features)
+    
+    # Label segments
+    centers = scaler.inverse_transform(kmeans.cluster_centers_)
+    labels = {}
+    for i, center in enumerate(centers):
+        if center[0] > centers[:, 0].mean() and center[1] > centers[:, 1].mean():
+            labels[i] = 'High Value'
+        elif center[0] < centers[:, 0].mean() and center[1] < centers[:, 1].mean():
+            labels[i] = 'Low Value'
         else:
-            st.altair_chart(line.properties(height=360), use_container_width=True)
+            labels[i] = 'Mid Value'
+            
+    cust_data['segment'] = cust_data['segment_id'].map(labels)
+    
+    # Merge segments back to original dataframe
+    df = df.merge(cust_data[['customers', 'segment']], on='customers', how='left')
+    return df
 
-with b:
-    st.subheader("Revenue by Channel")
-    by_ch = filtered.groupby("channel", as_index=False)["revenue"].sum().sort_values("revenue", ascending=False)
-    if use_plotly and PLOTLY_OK:
-        fig = px.bar(by_ch, x="revenue", y="channel", orientation="h", title=None)
-        fig.update_layout(margin=dict(l=0,r=0,t=0,b=0), height=360)
-        st.plotly_chart(fig, use_container_width=True, config={"responsive": True, "displayModeBar": False})
+@st.cache_resource
+def get_forecast(df, periods=90):
+    """Generates a revenue forecast using available models."""
+    results = {}
+    ts_df = df.groupby('date')['revenue'].sum().reset_index()
+    ts_df.columns = ['ds', 'y']
+    
+    # Prophet
+    if PROPHET_INSTALLED:
+        try:
+            m = Prophet()
+            m.fit(ts_df)
+            future = m.make_future_dataframe(periods=periods)
+            forecast = m.predict(future)
+            results['Prophet'] = forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']]
+        except Exception as e:
+            st.warning(f"Prophet forecast failed: {e}")
+    
+    # Fallback to a simple moving average if no other models are available
+    if not results:
+        last_date = ts_df['ds'].max()
+        future_dates = pd.date_range(start=last_date + timedelta(days=1), periods=periods)
+        
+        # Simple moving average forecast
+        window = 30
+        moving_avg = ts_df['y'].rolling(window=window).mean().iloc[-1]
+        if pd.isna(moving_avg):
+            moving_avg = ts_df['y'].mean()
+            
+        forecast_values = [moving_avg] * periods
+        
+        forecast_df = pd.DataFrame({
+            'ds': future_dates,
+            'yhat': forecast_values,
+            'yhat_lower': [v * 0.8 for v in forecast_values],
+            'yhat_upper': [v * 1.2 for v in forecast_values],
+        })
+        results['Simple Moving Average'] = forecast_df
+        
+    return results
+
+#==============================================================================
+# UI RENDERING
+#==============================================================================
+
+def main():
+    # --- Load initial query params ---
+    query_params = st.query_params.to_dict()
+    for k, v in query_params.items():
+        if isinstance(v, list) and len(v) == 1:
+            query_params[k] = v[0]
+            
+    # --- Sidebar ---
+    with st.sidebar:
+        st.header("⚙️ Configuration")
+        
+        # Theme Toggle
+        theme = query_params.get("theme", "light")
+        if st.toggle("Dark Theme", value=(theme == "dark"), key="theme_toggle"):
+            st.session_state.theme = "dark"
+        else:
+            st.session_state.theme = "light"
+        
+        # This is a hack to set the theme as st.set_page_config must be at the top
+        # The real solution requires a page reload. We'll manage via URL params.
+        if st.session_state.theme != theme:
+            st.query_params.theme = st.session_state.theme
+            st.rerun()
+
+        # --- File Uploader and Sample Data ---
+        uploaded_file = st.file_uploader("Upload your sales CSV", type="csv", key="uploaded_file")
+        
+        st.markdown("**Or use a sample dataset:**")
+        sample_domain = st.selectbox("Business Domain", ["Sports Apparel", "Video Games", "Music Streaming"])
+        
+        if st.button("Load Sample Data"):
+            st.session_state.df = generate_sample_data(sample_domain)
+            st.query_params.clear() # Clear params when loading new data
+            st.rerun()
+
+        if 'df' not in st.session_state and uploaded_file:
+            st.session_state.df = load_data(uploaded_file)
+        
+        if 'df' in st.session_state and st.session_state.df is not None:
+            df = st.session_state.df
+            
+            st.header("📊 Filters")
+            
+            # --- Date Range Filter with safe defaults ---
+            min_date, max_date = df['date'].min().date(), df['date'].max().date()
+            
+            try:
+                start_d_qp = pd.to_datetime(query_params.get("start_date", min_date)).date()
+            except (ValueError, TypeError):
+                start_d_qp = min_date
+            
+            try:
+                end_d_qp = pd.to_datetime(query_params.get("end_date", max_date)).date()
+            except (ValueError, TypeError):
+                end_d_qp = max_date
+            
+            # Clamp dates to be within the data's range
+            start_d_clamped = max(min_date, start_d_qp)
+            end_d_clamped = min(max_date, end_d_qp)
+            
+            date_range = st.date_input(
+                "Date Range",
+                value=(start_d_clamped, end_d_clamped),
+                min_value=min_date,
+                max_value=max_date,
+                key='date_range'
+            )
+            start_date, end_date = date_range if len(date_range) == 2 else (min_date, max_date)
+            st.session_state.start_date = start_date.strftime('%Y-%m-%d')
+            st.session_state.end_date = end_date.strftime('%Y-%m-%d')
+
+            # --- Multiselect Filters with safe defaults ---
+            regions = sorted(df['region'].unique())
+            selected_regions = safe_multiselect('Region', regions, regions, 'regions', query_params)
+
+            channels = sorted(df['channel'].unique())
+            selected_channels = safe_multiselect('Channel', channels, channels, 'channels', query_params)
+            
+            # --- Apply Filters ---
+            filtered_df = df[
+                (df['date'].dt.date >= start_date) &
+                (df['date'].dt.date <= end_date) &
+                (df['region'].isin(selected_regions)) &
+                (df['channel'].isin(selected_channels))
+            ]
+            
+            # --- Run ML Models on filtered data ---
+            filtered_df = get_anomalies(filtered_df)
+            filtered_df = get_customer_segments(filtered_df)
+
+            # --- Update URL on change ---
+            # This must be outside the filter creation to capture their state
+            st.button("Apply Filters & Share", on_click=update_query_params, use_container_width=True, type="primary")
+
+            # --- Database Persistence ---
+            st.header("💾 Data Persistence")
+            use_db = st.toggle("Save data to local DB", key="use_db")
+            if use_db:
+                conn = sqlite3.connect("sales_data.db")
+                initialize_db(conn)
+                if st.button("Sync to Database"):
+                    rows_added = insert_data(conn, df)
+                    st.success(f"Synced to database. {rows_added} new records added.")
+                conn.close()
+
+            # --- Debugging & Environment ---
+            with st.expander("🛠️ Environment Debugger"):
+                if st.button("Clear All Caches"):
+                    st.cache_data.clear()
+                    st.cache_resource.clear()
+                    st.success("Caches cleared. Rerun to see changes.")
+                    st.rerun()
+
+                st.write("**Optional Libraries Status:**")
+                st.info(f"Prophet: {'✅ Installed' if PROPHET_INSTALLED else '❌ Not Installed'}")
+                st.info(f"XGBoost: {'✅ Installed' if XGBOOST_INSTALLED else '❌ Not Installed'}")
+                st.info(f"LightGBM: {'✅ Installed' if LIGHTGBM_INSTALLED else '❌ Not Installed'}")
+                st.info(f"FPDF (for PDF): {'✅ Installed' if FPDF_INSTALLED else '❌ Not Installed'}")
+
+    # --- Main Dashboard Area ---
+    if 'df' not in st.session_state or st.session_state.df is None:
+        st.info("👋 Welcome to the AI Revenue Recovery Dashboard! Please upload a sales CSV or load a sample dataset to begin.")
+        st.markdown("Your CSV should contain columns like `date`, `region`, `channel`, `product`, `revenue`, and `customers`.")
+        return
+
+    st.title("💡 AI Revenue Recovery Dashboard")
+    
+    # --- KPIs ---
+    total_revenue = filtered_df['revenue'].sum()
+    anomalies = filtered_df[filtered_df['anomaly']]
+    recoverable_revenue = anomalies[anomalies['revenue'] < filtered_df['revenue'].mean()]['revenue'].sum()
+    upsell_potential = filtered_df[filtered_df['segment'] == 'Mid Value']['revenue'].sum() * 0.15 # Assume 15% upsell
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Revenue", f"${total_revenue:,.2f}")
+    col2.metric("Recoverable Revenue (Anomalies)", f"${recoverable_revenue:,.2f}", help="Revenue lost from negative anomalies.")
+    col3.metric("Upsell Potential", f"${upsell_potential:,.2f}", help="Estimated revenue from upselling 'Mid Value' customers.")
+
+    # --- Charts ---
+    st.markdown("---")
+    
+    # Revenue Trend with Anomalies
+    st.subheader("Revenue Trend & Anomalies")
+    trend_df = filtered_df.groupby('date').agg({'revenue': 'sum', 'anomaly': 'max'}).reset_index()
+    fig_trend = px.line(trend_df, x='date', y='revenue', title='Daily Revenue')
+    
+    anomaly_points = trend_df[trend_df['anomaly']]
+    if not anomaly_points.empty:
+        fig_trend.add_trace(go.Scatter(
+            x=anomaly_points['date'], y=anomaly_points['revenue'],
+            mode='markers', name='Anomaly',
+            marker=dict(color='red', size=10, symbol='circle')
+        ))
+    st.plotly_chart(fig_trend, use_container_width=True)
+    
+    # Revenue Breakdown
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("Revenue by Channel")
+        channel_rev = filtered_df.groupby('channel')['revenue'].sum().reset_index()
+        fig_channel = px.pie(channel_rev, names='channel', values='revenue', hole=0.3)
+        st.plotly_chart(fig_channel, use_container_width=True)
+
+    with c2:
+        st.subheader("Revenue by Region")
+        region_rev = filtered_df.groupby('region')['revenue'].sum().reset_index()
+        fig_region = px.bar(region_rev, x='region', y='revenue', color='region')
+        st.plotly_chart(fig_region, use_container_width=True)
+    
+    # Forecasting
+    st.markdown("---")
+    st.subheader("Revenue Forecast")
+    if not filtered_df.empty:
+        forecasts = get_forecast(filtered_df)
+        
+        model_choice = st.selectbox("Select Forecast Model", list(forecasts.keys()))
+        
+        forecast_df = forecasts[model_choice]
+        
+        fig_forecast = go.Figure()
+        fig_forecast.add_trace(go.Scatter(x=filtered_df['date'], y=filtered_df['revenue'], mode='lines', name='Actual Revenue'))
+        fig_forecast.add_trace(go.Scatter(x=forecast_df['ds'], y=forecast_df['yhat'], mode='lines', name='Forecast', line=dict(color='orange')))
+        fig_forecast.add_trace(go.Scatter(x=forecast_df['ds'], y=forecast_df['yhat_upper'], fill='tonexty', mode='lines', line_color='rgba(255,165,0,0.2)', name='Upper Bound'))
+        fig_forecast.add_trace(go.Scatter(x=forecast_df['ds'], y=forecast_df['yhat_lower'], fill='tonexty', mode='lines', line_color='rgba(255,165,0,0.2)', name='Lower Bound'))
+        
+        st.plotly_chart(fig_forecast, use_container_width=True)
+    
+    # --- PDF Export & Waitlist ---
+    st.markdown("---")
+    c1, c2 = st.columns([1, 3])
+    with c1:
+        st.subheader("Actions")
+        if FPDF_INSTALLED:
+            if st.button("Export KPIs to PDF"):
+                pdf = FPDF()
+                pdf.add_page()
+                pdf.set_font("Arial", size=16)
+                pdf.cell(200, 10, txt="AI Revenue Recovery KPIs", ln=True, align='C')
+                pdf.set_font("Arial", size=12)
+                pdf.cell(200, 10, txt=f"Date: {datetime.now().strftime('%Y-%m-%d')}", ln=True)
+                pdf.ln(10)
+                pdf.cell(200, 10, txt=f"Total Revenue: ${total_revenue:,.2f}", ln=True)
+                pdf.cell(200, 10, txt=f"Recoverable Revenue (Anomalies): ${recoverable_revenue:,.2f}", ln=True)
+                pdf.cell(200, 10, txt=f"Upsell Potential: ${upsell_potential:,.2f}", ln=True)
+                
+                pdf_output = pdf.output(dest='S').encode('latin-1')
+                st.download_button(
+                    label="Download PDF",
+                    data=pdf_output,
+                    file_name=f"kpi_report_{datetime.now().strftime('%Y%m%d')}.pdf",
+                    mime="application/pdf"
+                )
+        else:
+            st.warning("PDF export requires `fpdf2`. Please install it.")
+    
+    with c2:
+        with st.form("waitlist_form"):
+            st.subheader("Join the Waitlist for Advanced Features")
+            email = st.text_input("Enter your email")
+            submitted = st.form_submit_button("Join Now")
+            if submitted and email:
+                st.success(f"Thank you! {email} has been added to our waitlist.")
+
+#==============================================================================
+# SCRIPT EXECUTION
+#==============================================================================
+if __name__ == "__main__":
+    # --- Apply Theme based on URL param ---
+    # This must be done before any other st call for the theme to be set on first load
+    # It will cause a quick flicker on theme change as the page reloads.
+    page_theme = st.query_params.get("theme", "light")
+    if page_theme == "dark":
+        st.config.set_option('theme.backgroundColor', '#0E1117')
+        st.config.set_option('theme.base', 'dark')
     else:
-        st.altair_chart(alt.Chart(by_ch).mark_bar().encode(
-            x=alt.X("revenue:Q", title="Revenue ($)", axis=alt.Axis(format="~s")),
-            y=alt.Y("channel:N", sort="-x"),
-            tooltip=["channel:N", alt.Tooltip("revenue:Q", format=",.0f")]
-        ).properties(height=360), use_container_width=True)
+        st.config.set_option('theme.backgroundColor', '#FFFFFF')
+        st.config.set_option('theme.base', 'light')
 
-st.subheader("Revenue by Region")
-by_rg = filtered.groupby("region", as_index=False)["revenue"].sum().sort_values("revenue", ascending=False)
-if use_plotly and PLOTLY_OK:
-    fig = px.bar(by_rg, x="region", y="revenue", title=None)
-    fig.update_layout(margin=dict(l=0,r=0,t=0,b=0), height=320)
-    st.plotly_chart(fig, use_container_width=True, config={"responsive": True, "displayModeBar": False})
-else:
-    st.altair_chart(alt.Chart(by_rg).mark_bar().encode(
-        x=alt.X("region:N", title="Region"),
-        y=alt.Y("revenue:Q", title="Revenue ($)", axis=alt.Axis(format="~s")),
-        tooltip=["region:N", alt.Tooltip("revenue:Q", format=",.0f")]
-    ).properties(height=320), use_container_width=True)
-
-st.subheader("30-Day Revenue Forecast " + ("(Prophet)" if run_forecast and PROPHET_OK and not fc.empty else "(Fallback)"))
-if fc.empty:
-    st.info("Not enough history to forecast yet or forecast failed.")
-else:
-    if use_plotly and PLOTLY_OK:
-        fig = go.Figure()
-        hist = fc[fc["type"]=="Historical"]
-        fut  = fc[fc["type"]=="Forecast"]
-        fig.add_trace(go.Scatter(x=hist["date"], y=hist["value"], name="Historical", mode="lines+markers"))
-        fig.add_trace(go.Scatter(x=fut["date"], y=fut["value"], name="Forecast", mode="lines+markers"))
-        fig.update_layout(margin=dict(l=0,r=0,t=0,b=0), height=360)
-        st.plotly_chart(fig, use_container_width=True, config={"responsive": True, "displayModeBar": False})
-    else:
-        st.altair_chart(alt.Chart(fc).mark_line(point=True).encode(
-            x=alt.X("date:T", title="Date"),
-            y=alt.Y("value:Q", title="Revenue ($)", axis=alt.Axis(format="~s")),
-            color="type:N",
-            tooltip=["type:N","date:T",alt.Tooltip("value:Q", format=",.0f")]
-        ).properties(height=360), use_container_width=True)
-
-st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
-
-# ---------------------------------------------------------------------
-# Export & Share
-# ---------------------------------------------------------------------
-kpi_df = pd.DataFrame([
-    {"metric":"Total Revenue (30d)","value": total_rev_30},
-    {"metric":"Avg Daily Revenue (30d)","value": avg_rev_30},
-    {"metric":"Anomaly Days","value": anomaly_days},
-    {"metric":"Top Channel","value": top_channel_name},
-    {"metric":"Recoverable (Anomalies)","value": potential_loss},
-    {"metric":"Upsell Potential","value": upsell_potential},
-    {"metric":"30d Forecast Uplift","value": forecast_uplift},
-])
-cA, cB, cC = st.columns([1,1,2])
-with cA: st.download_button("Filtered CSV", filtered.to_csv(index=False), "filtered_data.csv", "text/csv")
-with cB: st.download_button("KPIs CSV", kpi_df.to_csv(index=False), "kpis.csv", "text/csv")
-with cC:
-    cur_qp = read_query_params()
-    share_url = "?" + "&".join([f"{k}={','.join(v) if isinstance(v,list) else v}" for k,v in cur_qp.items()])
-    st.text_input("Share this exact view (copy URL)", value=share_url)
+    main()
