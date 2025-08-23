@@ -1,8 +1,5 @@
 # AI Revenue Recovery – All-in-One (Crisp UI + Upload Staging + RAG + Plotly + AutoML)
 # Run: streamlit run streamlit_app.py
-#
-# This file gracefully degrades when optional packages are missing.
-# See requirements suggestions at the bottom.
 
 # ----- Limit CPU threads early to avoid thrashing on shared runners -----
 import os as _os
@@ -60,7 +57,7 @@ except Exception:
 # PyTorch / TensorFlow (optional demos)
 TORCH_OK = TF_OK = True
 try:
-    import torch, torch.nn as nn, torch.optim as optim
+    import torch, torch.optim as optim
 except Exception:
     TORCH_OK = False
 try:
@@ -166,7 +163,7 @@ st.markdown(f"""
 .hero {{
   padding:1rem 1.2rem;border-radius:14px;
   background:linear-gradient(135deg,#6366F1,#EC4899);
-  color:#fff;box-shadow:0 6px 18px rgba(0,0,0,.12); /* lighter than before */
+  color:#fff;box-shadow:0 6px 18px rgba(0,0,0,.12);
 }}
 .card {{
   background:{PALETTE['card_bg']};border:1px solid {PALETTE['card_border']};
@@ -375,9 +372,9 @@ def automl_train(df, target_col, framework="flaml"):
     except Exception as e:
         return f"AutoML error: {e}", {}
 
-# ----- DL demos (guard definitions to avoid NameError when PyTorch/TF missing) -----
+# ----- DL demos (guarded so no NameError without PyTorch) --------------
 if TORCH_OK:
-    import torch.nn as _nn  # local alias to avoid global NameError if torch is absent
+    import torch.nn as _nn  # import inside guard
 
     class LSTMModel(_nn.Module):
         def __init__(self, input_size=1, hidden_size=32, num_layers=2, output_size=1):
@@ -393,20 +390,21 @@ if TORCH_OK:
             torch.set_num_threads(2)
         except Exception:
             pass
-        if len(series) < 5:
-            return None, None
+        if len(series) < 5: return None, None
         data = torch.tensor(series.values, dtype=torch.float32).view(-1,1,1)
         X, y = data[:-1], data[1:]
         model = LSTMModel()
-        criterion = _nn.MSELoss()
-        opt = optim.Adam(model.parameters(), lr=0.01)
+        criterion = _nn.MSELoss(); opt = optim.Adam(model.parameters(), lr=0.01)
         for _ in range(epochs):
             opt.zero_grad(); out = model(X); loss = criterion(out, y); loss.backward(); opt.step()
         return model, float(loss.item())
 else:
-    # Safe stubs when PyTorch is unavailable
+    # Safe stub when PyTorch isn't available
     def train_lstm_pytorch(series, epochs=3):
         return None, None
+
+def train_tf_dense(df):
+    if not TF_OK or len(df) < 10: return None, None
     X = df[["revenue","customers"]].values
     y = (df["revenue"] > df["revenue"].median()).astype(int).values
     model = keras.Sequential([
@@ -453,7 +451,14 @@ with right:
         st.rerun()
 
 # ===== UPLOAD / LOAD (Staged to prevent blur) ==========================
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""CREATE TABLE IF NOT EXISTS sales_data(
+      date TEXT, region TEXT, channel TEXT, segment TEXT, product TEXT, revenue REAL, customers INTEGER
+    )""")
+    conn.close()
 init_db()
+
 if "data_ready" not in st.session_state:
     st.session_state.data_ready = False
 if "just_uploaded" not in st.session_state:
@@ -552,7 +557,6 @@ if "applied_filters" not in st.session_state or apply:
         "turbo": turbo, "run_forecast": run_forecast, "run_ml": run_ml,
         "use_plotly": use_plotly, "run_automl": run_automl
     }
-    # After first post-upload render, release "just_uploaded"
     if st.session_state.just_uploaded:
         st.session_state.just_uploaded = False
 
