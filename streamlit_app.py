@@ -501,20 +501,7 @@ if df.empty:
 if st.session_state.just_uploaded and "applied_filters" in st.session_state:
     st.session_state.applied_filters["turbo"] = True
 
-# ===== FILTERS (hardened: string options + clamped defaults + safe dates) =====
-def parse_csv_list(s):
-    if not s:
-        return []
-    if isinstance(s, list):  # streamlit >= 1.32 can return list
-        s = s[0] if s else ""
-    return [x.strip() for x in str(s).split(",") if x.strip()]
 
-def clamp_defaults(defaults, options):
-    """Keep only defaults that exist in options; if none, fall back to *all* options."""
-    if not isinstance(defaults, list):
-        defaults = [defaults] if defaults else []
-    safe = [d for d in defaults if d in options]
-    return safe if safe else options
 
 # --- Build option lists as PLAIN STRINGS (avoid pandas 'category' surprises)
 all_regions  = sorted([str(x) for x in df["region"].dropna().astype(str).unique().tolist()])
