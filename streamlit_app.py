@@ -501,49 +501,111 @@ if df.empty:
 if st.session_state.just_uploaded and "applied_filters" in st.session_state:
     st.session_state.applied_filters["turbo"] = True
 
-# ===== FILTERS (safe defaults + URL sync) =====
-
+# ===== FILTERS (hardened: string options + clamped defaults + safe dates) =====
 def parse_csv_list(s):
-    if not s: return []
-    if isinstance(s, list): s = s[0] if s else ""
+    if not s:
+        return []
+    if isinstance(s, list):  # streamlit >= 1.32 can return list
+        s = s[0] if s else ""
     return [x.strip() for x in str(s).split(",") if x.strip()]
 
 def clamp_defaults(defaults, options):
-    """Keep only defaults that exist in options; if none, fall back to options."""
+    """Keep only defaults that exist in options; if none, fall back to *all* options."""
+    if not isinstance(defaults, list):
+        defaults = [defaults] if defaults else []
     safe = [d for d in defaults if d in options]
     return safe if safe else options
 
-# Build option lists from data
-all_regions  = sorted(df["region"].dropna().unique().tolist())
-all_channels = sorted(df["channel"].dropna().unique().tolist())
-all_segments = sorted(df.get("segment", pd.Series(["All"])).dropna().unique().tolist())
-all_products = sorted(df.get("product", pd.Series(["All"])).dropna().unique().tolist())
+# --- Build option lists as PLAIN STRINGS (avoid pandas 'category' surprises)
+all_regions  = sorted([str(x) for x in df["region"].dropna().astype(str).unique().tolist()])
+all_channels = sorted([str(x) for x in df["channel"].dropna().astype(str).unique().tolist()])
+all_segments = sorted([str(x) for x in (df["segment"] if "segment" in df.columns else pd.Series(["All"])).dropna().astype(str).unique().tolist()])
+all_products = sorted([str(x) for x in (df["product"] if "product" in df.columns else pd.Series(["All"])).dropna().astype(str).unique().tolist()])
 
-# Read query params
+# --- Read URL params and clamp to valid options
 qp = read_query_params()
-sel_regions_q  = parse_csv_list(qp.get("region",  ""))
-sel_channels_q = parse_csv_list(qp.get("channel", ""))
-sel_segments_q = parse_csv_list(qp.get("segment", ""))
-sel_products_q = parse_csv_list(qp.get("product", ""))
+regions_default  = clamp_defaults(parse_csv_list(qp.get("region",  "")) or all_regions,  all_regions)
+channels_default = clamp_defaults(parse_csv_list(qp.get("channel", "")) or all_channels, all_channels)
+segments_default = clamp_defaults(parse_csv_list(qp.get("segment", "")) or all_segments, all_segments)
+products_default = clamp_defaults(parse_csv_list(qp.get("product", "")) or all_products, all_products)
 
-# Clamp defaults so Streamlit never errors
-regions_default  = clamp_defaults(sel_regions_q  or all_regions,  all_regions)
-channels_default = clamp_defaults(sel_channels_q or all_channels, all_channels)
-segments_default = clamp_defaults(sel_segments_q or all_segments, all_segments)
-products_default = clamp_defaults(sel_products_q or all_products, all_products)
-
-# Dates: build safe defaults (must be date objects and within data bounds)
+# --- Safe date defaults (date objects, clamped to data range, ordered)
 min_ts = pd.to_datetime(df["date"].min())
 max_ts = pd.to_datetime(df["date"].max())
-def _to_date(s, fallback):
+fallback_start = max((max_ts - pd.Timedelta(days=60)).date(), min_ts.date())
+fallback_end   = max_ts.date()
+
+def _safe_date(val, fb):
     try:
-        d = pd.to_datetime(s).date()
-        # clamp within min/max
-        if d < min_ts.date(): d = min_ts.date()
-        if d > max_ts.date(): d = max_ts.date()
-        return d
+        d = pd.to_datetime(val).date()
     except Exception:
-        return fallback
+        d = fb
+    # clamp within bounds
+    if d < min_ts.date(): d = min_ts.date()
+    if d > max_ts.date(): d = max_ts.date()
+    return d
+
+start_default = _safe_date(qp.get("start",""), fallback_start)
+end_default   = _safe_date(qp.get("end",""),   fallback_end)
+if start_default > end_default:
+    start_default, end_default = end_default, start_default  # enforce start <= end
+
+# --- Render widgets (keys avoid state collisions)
+with st.sidebar:
+    st.header("Filters")
+    regions_sel  = st.multiselect("🌍 Region",  options=all_regions,  default=regions_default,  key="flt_regions")
+    channels_sel = st.multiselect("📊 Channel", options=all_channels, default=channels_default, key="flt_channels")
+    segments_sel = st.multiselect("👥 Segment", options=all_segments, default=segments_default, key="flt_segments")
+    products_sel = st.multiselect("📦 Product", options=all_products, default=products_default, key="flt_products")
+
+    date_range = st.date_input(
+        "📅 Date Range",
+        value=(start_default, end_default),
+        min_value=min_ts.date(),
+        max_value=max_ts.date(),
+        key="flt_dates"
+    )
+
+    st.markdown("---")
+    use_plotly   = st.toggle("📈 Use Plotly charts", value=PLOTLY_OK, key="opt_plotly")
+    turbo        = st.toggle("⚡ Turbo mode (skip heavy models)", value=True, key="opt_turbo")
+    run_forecast = st.toggle("🔮 Forecast (Prophet if available)", value=not turbo, key="opt_fc")
+    run_ml       = st.toggle("🤖 Train ML (Churn/Upsell)", value=not turbo, key="opt_ml")
+    run_automl   = st.toggle("🧪 AutoML (FLAML/PyCaret)", value=False, key="opt_automl")
+    apply = st.button("✅ Apply filters", key="btn_apply")
+
+# --- Apply or initialize config
+if "applied_filters" not in st.session_state or apply:
+    if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+        start_date, end_date = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1])
+    else:
+        start_date, end_date = min_ts, max_ts
+    st.session_state.applied_filters = {
+        "regions": regions_sel or all_regions,
+        "channels": channels_sel or all_channels,
+        "segments": segments_sel or all_segments,
+        "products": products_sel or all_products,
+        "start": start_date,
+        "end": end_date,
+        "turbo": turbo, "run_forecast": run_forecast, "run_ml": run_ml,
+        "use_plotly": use_plotly, "run_automl": run_automl
+    }
+
+cfg = st.session_state.applied_filters
+regions_sel, channels_sel = cfg["regions"], cfg["channels"]
+segments_sel, products_sel = cfg["segments"], cfg["products"]
+start_date, end_date = cfg["start"], cfg["end"]
+turbo, run_forecast, run_ml, use_plotly, run_automl = cfg["turbo"], cfg["run_forecast"], cfg["run_ml"], cfg["use_plotly"], cfg["run_automl"]
+
+# --- Keep URL in sync (always valid now)
+set_query_params(
+    region=",".join(regions_sel),
+    channel=",".join(channels_sel),
+    segment=",".join(segments_sel),
+    product=",".join(products_sel),
+    start=start_date.date().isoformat(),
+    end=end_date.date().isoformat(),
+)
 
 # Use URL if present; otherwise default to last 60 days (or whole range if shorter)
 fallback_start = max((max_ts - pd.Timedelta(days=60)).date(), min_ts.date())
