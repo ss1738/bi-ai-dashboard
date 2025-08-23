@@ -234,10 +234,13 @@ def get_customer_segments(df):
     # Label segments
     centers = scaler.inverse_transform(kmeans.cluster_centers_)
     labels = {}
-    for i, center in enumerate(centers):
-        if center[0] > centers[:, 0].mean() and center[1] > centers[:, 1].mean():
+    high_value_idx = np.argmax(centers[:, 0] + centers[:, 1])
+    low_value_idx = np.argmin(centers[:, 0] + centers[:, 1])
+    
+    for i in range(3):
+        if i == high_value_idx:
             labels[i] = 'High Value'
-        elif center[0] < centers[:, 0].mean() and center[1] < centers[:, 1].mean():
+        elif i == low_value_idx:
             labels[i] = 'Low Value'
         else:
             labels[i] = 'Mid Value'
@@ -311,8 +314,6 @@ def main():
         else:
             st.session_state.theme = "light"
         
-        # This is a hack to set the theme as st.set_page_config must be at the top
-        # The real solution requires a page reload. We'll manage via URL params.
         if st.session_state.theme != theme:
             st.query_params.theme = st.session_state.theme
             st.rerun()
@@ -325,7 +326,7 @@ def main():
         
         if st.button("Load Sample Data"):
             st.session_state.df = generate_sample_data(sample_domain)
-            st.query_params.clear() # Clear params when loading new data
+            st.query_params.clear() 
             st.rerun()
 
         if 'df' not in st.session_state and uploaded_file:
@@ -349,7 +350,6 @@ def main():
             except (ValueError, TypeError):
                 end_d_qp = max_date
             
-            # Clamp dates to be within the data's range
             start_d_clamped = max(min_date, start_d_qp)
             end_d_clamped = min(max_date, end_d_qp)
             
@@ -383,8 +383,6 @@ def main():
             filtered_df = get_anomalies(filtered_df)
             filtered_df = get_customer_segments(filtered_df)
 
-            # --- Update URL on change ---
-            # This must be outside the filter creation to capture their state
             st.button("Apply Filters & Share", on_click=update_query_params, use_container_width=True, type="primary")
 
             # --- Database Persistence ---
@@ -398,7 +396,6 @@ def main():
                     st.success(f"Synced to database. {rows_added} new records added.")
                 conn.close()
 
-            # --- Debugging & Environment ---
             with st.expander("🛠️ Environment Debugger"):
                 if st.button("Clear All Caches"):
                     st.cache_data.clear()
@@ -424,7 +421,12 @@ def main():
     total_revenue = filtered_df['revenue'].sum()
     anomalies = filtered_df[filtered_df['anomaly']]
     recoverable_revenue = anomalies[anomalies['revenue'] < filtered_df['revenue'].mean()]['revenue'].sum()
-    upsell_potential = filtered_df[filtered_df['segment'] == 'Mid Value']['revenue'].sum() * 0.15 # Assume 15% upsell
+    
+    # *** FIX APPLIED HERE ***
+    # Defensively check if 'segment' column exists before calculation to prevent KeyError
+    upsell_potential = 0.0
+    if 'segment' in filtered_df.columns:
+        upsell_potential = filtered_df[filtered_df['segment'] == 'Mid Value']['revenue'].sum() * 0.15
 
     col1, col2, col3 = st.columns(3)
     col1.metric("Total Revenue", f"${total_revenue:,.2f}")
@@ -434,7 +436,6 @@ def main():
     # --- Charts ---
     st.markdown("---")
     
-    # Revenue Trend with Anomalies
     st.subheader("Revenue Trend & Anomalies")
     trend_df = filtered_df.groupby('date').agg({'revenue': 'sum', 'anomaly': 'max'}).reset_index()
     fig_trend = px.line(trend_df, x='date', y='revenue', title='Daily Revenue')
@@ -448,7 +449,6 @@ def main():
         ))
     st.plotly_chart(fig_trend, use_container_width=True)
     
-    # Revenue Breakdown
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("Revenue by Channel")
@@ -462,7 +462,6 @@ def main():
         fig_region = px.bar(region_rev, x='region', y='revenue', color='region')
         st.plotly_chart(fig_region, use_container_width=True)
     
-    # Forecasting
     st.markdown("---")
     st.subheader("Revenue Forecast")
     if not filtered_df.empty:
@@ -480,7 +479,6 @@ def main():
         
         st.plotly_chart(fig_forecast, use_container_width=True)
     
-    # --- PDF Export & Waitlist ---
     st.markdown("---")
     c1, c2 = st.columns([1, 3])
     with c1:
@@ -520,9 +518,6 @@ def main():
 # SCRIPT EXECUTION
 #==============================================================================
 if __name__ == "__main__":
-    # --- Apply Theme based on URL param ---
-    # This must be done before any other st call for the theme to be set on first load
-    # It will cause a quick flicker on theme change as the page reloads.
     page_theme = st.query_params.get("theme", "light")
     if page_theme == "dark":
         st.config.set_option('theme.backgroundColor', '#0E1117')
