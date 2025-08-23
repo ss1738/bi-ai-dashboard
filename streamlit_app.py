@@ -501,64 +501,102 @@ if df.empty:
 if st.session_state.just_uploaded and "applied_filters" in st.session_state:
     st.session_state.applied_filters["turbo"] = True
 
-# ===== FILTERS (Apply) + TOGGLES ======================================
-df["date"] = pd.to_datetime(df["date"], errors="coerce")
-df = df.dropna(subset=["date"]).copy()
-min_ts, max_ts = pd.to_datetime(df["date"].min()), pd.to_datetime(df["date"].max())
-default_end = max_ts.date()
-default_start = max((max_ts - pd.Timedelta(days=60)).date(), min_ts.date())
+# ===== FILTERS (safe defaults + URL sync) =====
 
-qp = read_query_params()
 def parse_csv_list(s):
     if not s: return []
     if isinstance(s, list): s = s[0] if s else ""
     return [x.strip() for x in str(s).split(",") if x.strip()]
 
+def clamp_defaults(defaults, options):
+    """Keep only defaults that exist in options; if none, fall back to options."""
+    safe = [d for d in defaults if d in options]
+    return safe if safe else options
+
+# Build option lists from data
 all_regions  = sorted(df["region"].dropna().unique().tolist())
 all_channels = sorted(df["channel"].dropna().unique().tolist())
 all_segments = sorted(df.get("segment", pd.Series(["All"])).dropna().unique().tolist())
 all_products = sorted(df.get("product", pd.Series(["All"])).dropna().unique().tolist())
 
-sel_regions  = parse_csv_list(qp.get("region",""))  or all_regions
-sel_channels = parse_csv_list(qp.get("channel","")) or all_channels
-sel_segments = parse_csv_list(qp.get("segment","")) or all_segments
-sel_products = parse_csv_list(qp.get("product","")) or all_products
+# Read query params
+qp = read_query_params()
+sel_regions_q  = parse_csv_list(qp.get("region",  ""))
+sel_channels_q = parse_csv_list(qp.get("channel", ""))
+sel_segments_q = parse_csv_list(qp.get("segment", ""))
+sel_products_q = parse_csv_list(qp.get("product", ""))
 
-def _to_date(s, default):
-    try: return pd.to_datetime(s).date()
-    except Exception: return default
-start_default = _to_date(qp.get("start",""), default_start)
-end_default   = _to_date(qp.get("end",""),   default_end)
+# Clamp defaults so Streamlit never errors
+regions_default  = clamp_defaults(sel_regions_q  or all_regions,  all_regions)
+channels_default = clamp_defaults(sel_channels_q or all_channels, all_channels)
+segments_default = clamp_defaults(sel_segments_q or all_segments, all_segments)
+products_default = clamp_defaults(sel_products_q or all_products, all_products)
+
+# Dates: build safe defaults (must be date objects and within data bounds)
+min_ts = pd.to_datetime(df["date"].min())
+max_ts = pd.to_datetime(df["date"].max())
+def _to_date(s, fallback):
+    try:
+        d = pd.to_datetime(s).date()
+        # clamp within min/max
+        if d < min_ts.date(): d = min_ts.date()
+        if d > max_ts.date(): d = max_ts.date()
+        return d
+    except Exception:
+        return fallback
+
+# Use URL if present; otherwise default to last 60 days (or whole range if shorter)
+fallback_start = max((max_ts - pd.Timedelta(days=60)).date(), min_ts.date())
+fallback_end   = max_ts.date()
+start_q = qp.get("start", "")
+end_q   = qp.get("end", "")
+start_default = _to_date(start_q, fallback_start)
+end_default   = _to_date(end_q,   fallback_end)
+# Ensure start <= end
+if start_default > end_default:
+    start_default, end_default = end_default, start_default
 
 with st.sidebar:
     st.header("Filters")
-    regions_sel  = st.multiselect("🌍 Region",  all_regions,  default=sel_regions)
-    channels_sel = st.multiselect("📊 Channel", all_channels, default=sel_channels)
-    segments_sel = st.multiselect("👥 Segment", all_segments, default=sel_segments)
-    products_sel = st.multiselect("📦 Product", all_products, default=sel_products)
-    date_range = st.date_input("📅 Date Range", value=(start_default, end_default),
-                               min_value=min_ts.date(), max_value=max_ts.date())
-    st.markdown("---")
-    use_plotly = st.toggle("📈 Use Plotly charts", value=PLOTLY_OK)
-    turbo = st.toggle("⚡ Turbo mode (skip heavy models)", value=True)
-    run_forecast = st.toggle("🔮 Forecast (Prophet if available)", value=not turbo)
-    run_ml = st.toggle("🤖 Train ML (Churn/Upsell)", value=not turbo)
-    run_automl = st.toggle("🧪 AutoML (FLAML/PyCaret)", value=False)
-    apply = st.button("✅ Apply filters")
+    regions_sel  = st.multiselect("🌍 Region",  all_regions,  default=regions_default, key="flt_regions")
+    channels_sel = st.multiselect("📊 Channel", all_channels, default=channels_default, key="flt_channels")
+    segments_sel = st.multiselect("👥 Segment",  all_segments, default=segments_default, key="flt_segments")
+    products_sel = st.multiselect("📦 Product",  all_products, default=products_default, key="flt_products")
 
+    date_range = st.date_input(
+        "📅 Date Range",
+        value=(start_default, end_default),
+        min_value=min_ts.date(),
+        max_value=max_ts.date(),
+        key="flt_dates"
+    )
+
+    st.markdown("---")
+    use_plotly   = st.toggle("📈 Use Plotly charts", value=PLOTLY_OK, key="opt_plotly")
+    turbo        = st.toggle("⚡ Turbo mode (skip heavy models)", value=True, key="opt_turbo")
+    run_forecast = st.toggle("🔮 Forecast (Prophet if available)", value=not turbo, key="opt_fc")
+    run_ml       = st.toggle("🤖 Train ML (Churn/Upsell)", value=not turbo, key="opt_ml")
+    run_automl   = st.toggle("🧪 AutoML (FLAML/PyCaret)", value=False, key="opt_automl")
+    apply = st.button("✅ Apply filters", key="btn_apply")
+
+# Apply or initialize config
 if "applied_filters" not in st.session_state or apply:
+    # Normalize date_input output
+    if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+        start_date, end_date = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1])
+    else:
+        start_date, end_date = min_ts, max_ts
+
     st.session_state.applied_filters = {
-        "regions": regions_sel,
-        "channels": channels_sel,
-        "segments": segments_sel,
-        "products": products_sel,
-        "start": pd.to_datetime(date_range[0]),
-        "end": pd.to_datetime(date_range[1]),
+        "regions": regions_sel or all_regions,
+        "channels": channels_sel or all_channels,
+        "segments": segments_sel or all_segments,
+        "products": products_sel or all_products,
+        "start": start_date,
+        "end": end_date,
         "turbo": turbo, "run_forecast": run_forecast, "run_ml": run_ml,
         "use_plotly": use_plotly, "run_automl": run_automl
     }
-    if st.session_state.just_uploaded:
-        st.session_state.just_uploaded = False
 
 cfg = st.session_state.applied_filters
 regions_sel, channels_sel = cfg["regions"], cfg["channels"]
@@ -566,24 +604,15 @@ segments_sel, products_sel = cfg["segments"], cfg["products"]
 start_date, end_date = cfg["start"], cfg["end"]
 turbo, run_forecast, run_ml, use_plotly, run_automl = cfg["turbo"], cfg["run_forecast"], cfg["run_ml"], cfg["use_plotly"], cfg["run_automl"]
 
+# Keep URL in sync (safe to call every render)
 set_query_params(
-    region=",".join(regions_sel), channel=",".join(channels_sel),
-    segment=",".join(segments_sel), product=",".join(products_sel),
-    start=start_date.date().isoformat(), end=end_date.date().isoformat()
+    region=",".join(regions_sel),
+    channel=",".join(channels_sel),
+    segment=",".join(segments_sel),
+    product=",".join(products_sel),
+    start=start_date.date().isoformat(),
+    end=end_date.date().isoformat(),
 )
-
-mask = (
-    df["region"].isin(regions_sel)
-    & df["channel"].isin(channels_sel)
-    & (df.get("segment","All").isin(segments_sel) if "segment" in df.columns else True)
-    & (df.get("product","All").isin(products_sel) if "product" in df.columns else True)
-    & df["date"].between(start_date, end_date)
-)
-filtered = df.loc[mask].copy()
-if filtered.empty:
-    st.warning("No rows match these filters. Showing all data for context.")
-    filtered = df.copy()
-
 # ===== Downsample for smoother charts =================================
 def downsample_daily(daily: pd.DataFrame, max_points=2000):
     if len(daily) <= max_points: return daily
