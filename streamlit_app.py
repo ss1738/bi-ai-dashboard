@@ -145,7 +145,8 @@ def get_anomalies(df, contamination=0.05):
     ts_data['anomaly'] = ts_data['anomaly_score'] == -1
     
     anomalous_dates = ts_data[ts_data['anomaly']]['date']
-    df['anomaly'] = df['date'].isin(anomalous_dates)
+    # original rows carry a time-of-day; resampled dates are at midnight — match on the calendar day
+    df['anomaly'] = df['date'].dt.normalize().isin(anomalous_dates)
     return df
 
 @st.cache_data
