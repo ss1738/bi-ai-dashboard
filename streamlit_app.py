@@ -236,14 +236,24 @@ def main():
         ai_key = ""
         if ai_provider in ("Groq", "OpenAI", "xAI"):
             _envk = {"Groq": "GROQ_API_KEY", "OpenAI": "OPENAI_API_KEY", "xAI": "XAI_API_KEY"}[ai_provider]
-            _default = os.environ.get(_envk, "")
-            if not _default:
+            # A shared key from the environment or app secrets is used server-side only,
+            # it is never placed into a browser field where a visitor could read it.
+            _shared = os.environ.get(_envk, "")
+            if not _shared:
                 try:
-                    _default = st.secrets.get(_envk, "")
+                    _shared = st.secrets.get(_envk, "")
                 except Exception:
-                    _default = ""
-            ai_key = st.text_input(f"{ai_provider} API key", type="password", value=_default, key="ai_key")
-            st.caption("Groq (free): console.groq.com  |  xAI: console.x.ai")
+                    _shared = ""
+            if _shared:
+                _own = st.checkbox("Use my own key instead", value=False, key="ai_use_own")
+                if _own:
+                    ai_key = st.text_input(f"{ai_provider} API key", type="password", value="", key="ai_key")
+                else:
+                    ai_key = _shared  # server-side only
+                    st.caption("AI is on, using the app's shared key.")
+            else:
+                ai_key = st.text_input(f"{ai_provider} API key", type="password", value="", key="ai_key")
+                st.caption("Groq is free at console.groq.com. Paste a key to switch the AI features on.")
         st.session_state["_ai_provider"] = ai_provider if ai_provider in ("Groq", "OpenAI", "xAI") else "None"
         st.session_state["_ai_key"] = ai_key
         st.markdown("---")
