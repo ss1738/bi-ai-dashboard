@@ -3,9 +3,6 @@ pandas
 numpy
 plotly
 scikit-learn
-# --- AI / LLM ---
 groq
 openai
-# Optional but recommended
-prophet
 fpdf2
