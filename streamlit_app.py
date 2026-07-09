@@ -232,14 +232,19 @@ def main():
 
         # --- AI engine (LLM) ---
         st.subheader("🤖 AI Engine")
-        ai_provider = st.selectbox("LLM provider", ["Groq", "OpenAI", "None (no key)"], key="ai_provider")
+        ai_provider = st.selectbox("LLM provider", ["Groq", "OpenAI", "xAI", "None (no key)"], key="ai_provider")
         ai_key = ""
-        if ai_provider in ("Groq", "OpenAI"):
-            _envk = {"Groq": "GROQ_API_KEY", "OpenAI": "OPENAI_API_KEY"}[ai_provider]
-            ai_key = st.text_input(f"{ai_provider} API key", type="password",
-                                   value=os.environ.get(_envk, ""), key="ai_key")
-            st.caption("Free Groq key at console.groq.com")
-        st.session_state["_ai_provider"] = ai_provider if ai_provider in ("Groq", "OpenAI") else "None"
+        if ai_provider in ("Groq", "OpenAI", "xAI"):
+            _envk = {"Groq": "GROQ_API_KEY", "OpenAI": "OPENAI_API_KEY", "xAI": "XAI_API_KEY"}[ai_provider]
+            _default = os.environ.get(_envk, "")
+            if not _default:
+                try:
+                    _default = st.secrets.get(_envk, "")
+                except Exception:
+                    _default = ""
+            ai_key = st.text_input(f"{ai_provider} API key", type="password", value=_default, key="ai_key")
+            st.caption("Groq (free): console.groq.com  |  xAI: console.x.ai")
+        st.session_state["_ai_provider"] = ai_provider if ai_provider in ("Groq", "OpenAI", "xAI") else "None"
         st.session_state["_ai_key"] = ai_key
         st.markdown("---")
 

@@ -53,6 +53,14 @@ def _call_llm(system: str, user: str, provider: str, api_key: str) -> str | None
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             temperature=0.2)
         return r.choices[0].message.content
+    if provider == "xAI" and api_key:
+        # xAI's API is OpenAI-compatible; just point the client at their base_url
+        from openai import OpenAI
+        r = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1").chat.completions.create(
+            model="grok-2-latest",
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0.2)
+        return r.choices[0].message.content
     return None
 
 
