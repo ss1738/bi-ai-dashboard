@@ -1,49 +1,46 @@
-# 📊 AI-Native BI Dashboard
+# BI Dashboard with AI
 
-An interactive **Business Intelligence dashboard** with **real GenAI** built on top of classical
-ML — upload your sales data (or use a sample), explore it, and then let an LLM analyse it and
-answer your questions in plain English, grounded in the actual numbers.
+A Streamlit dashboard for sales data. It does the usual BI and ML (KPIs, charts, segmentation,
+anomaly detection, forecasting) and adds two LLM features: an insights summary, and a chat where
+you can ask questions about the data in plain English.
 
-Built with Streamlit by an ML engineer — real models and real LLM integration, not a template.
+The LLM answers are grounded in a factual summary of the data, so they work from the real
+numbers instead of guessing.
 
 ## Features
-**Classical ML & BI**
-- KPI metrics, interactive Plotly charts, filters, dark/light theme
-- Customer segmentation (**KMeans**)
-- Revenue-anomaly detection (**IsolationForest**) with drill-down
-- Sales forecasting (**Prophet**, with a moving-average fallback)
+
+ML and BI:
+- KPIs, interactive Plotly charts, filters, light/dark theme
+- Customer segmentation (KMeans)
+- Revenue anomaly detection (IsolationForest) with drill-down
+- Sales forecasting (Prophet, with a moving-average fallback)
 - SQLite persistence and PDF export
 
-**GenAI (new)**
-- **🤖 AI Insights** — an LLM reads the *current filtered data* and writes specific, actionable
-  recommendations. Grounded in a factual data summary, so it uses only real numbers.
-- **💬 Ask Your Data** — conversational analytics: ask questions in plain English
-  ("which region is underperforming, and by how much?") and get answers grounded in your data.
-- **Model-agnostic**: swap between **Groq** (free) and **OpenAI**. Works key-free too (shows the
-  grounded data summary), so the app never breaks without an API key.
+LLM features:
+- AI Insights: reads the current filtered data and writes a short set of recommendations.
+- Ask Your Data: ask a question like "which region is underperforming, and by how much?" and get an answer from the data.
+- Works with Groq (free) or OpenAI. It also runs without a key, showing the data summary, so it never breaks.
 
-## 🚀 Run locally
+## Run locally
 ```bash
 pip install -r requirements.txt
 streamlit run streamlit_app.py
 ```
-In the sidebar, pick an LLM provider and paste a key:
-- **Groq** — free key at https://console.groq.com (fastest to try).
-- **OpenAI** — an `OPENAI_API_KEY`.
-- Or leave it on **None** to use the app with the grounded data summaries (no key needed).
+In the sidebar, choose a provider and paste a key:
+- Groq: free key at https://console.groq.com
+- OpenAI: an OPENAI_API_KEY
+- Or leave it on None to run without a key.
 
-## 🌐 Deploy a live demo (free)
-Push to GitHub → [share.streamlit.io](https://share.streamlit.io) → point at `streamlit_app.py`
-→ add `GROQ_API_KEY` in the app's Secrets so visitors get AI answers.
+## Deploy a live demo (free)
+Push to GitHub, open share.streamlit.io, point it at streamlit_app.py, and add GROQ_API_KEY in
+the app secrets so visitors get AI answers.
 
-## Why it's built this way
-The AI is **grounded**: the model is given a factual summary of the data and told to use only
-those numbers, which is what prevents confident-but-wrong answers. Classical ML (clustering,
-anomaly detection, forecasting) does the quantitative work; the LLM does the explanation and
-the conversation. The LLM is swappable; the value is the pipeline around it.
+## How the grounding works
+The model is given a factual summary of the data (totals, breakdowns by region and channel,
+anomalies, segments, trend) and told to use only those numbers. The ML does the calculations;
+the LLM does the explanation.
 
 ## Stack
-Python · Streamlit · pandas · scikit-learn · Plotly · Prophet · Groq / OpenAI
+Python, Streamlit, pandas, scikit-learn, Plotly, Prophet, Groq/OpenAI
 
----
-Built by **Satyawan Singh** — AI/ML engineer. Custom models & systems from scratch.
+Built by Satyawan Singh.

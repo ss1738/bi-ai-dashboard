@@ -145,7 +145,7 @@ def get_anomalies(df, contamination=0.05):
     ts_data['anomaly'] = ts_data['anomaly_score'] == -1
     
     anomalous_dates = ts_data[ts_data['anomaly']]['date']
-    # original rows carry a time-of-day; resampled dates are at midnight — match on the calendar day
+    # original rows carry a time-of-day; resampled dates are at midnight, match on the calendar day
     df['anomaly'] = df['date'].dt.normalize().isin(anomalous_dates)
     return df
 
@@ -365,7 +365,7 @@ def main():
     # --- Ask Your Data (conversational analytics) ---
     st.markdown("---")
     st.subheader("💬 Ask Your Data")
-    st.caption("Ask questions in plain English — answers are grounded in your current data.")
+    st.caption("Ask questions in plain English, answers are grounded in your current data.")
     if "_chat" not in st.session_state:
         st.session_state["_chat"] = []
     for _role, _msg in st.session_state["_chat"]:

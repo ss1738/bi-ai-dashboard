@@ -2,7 +2,7 @@
 Real LLM-powered insights + conversational analytics for the dashboard.
 
 Swappable provider (Groq / OpenAI). Everything is grounded in a compact, factual summary
-of the *current filtered* data — the model is given the numbers and told to use only those,
+of the *current filtered* data, the model is given the numbers and told to use only those,
 so it can't invent figures. Works with no key too (returns the summary + a note).
 """
 from __future__ import annotations
@@ -60,7 +60,7 @@ def generate_insights(df: pd.DataFrame, provider: str, api_key: str) -> str:
     summary = summarize(df)
     system = ("You are a sharp business analyst. From the data summary, write 4-6 concise, "
               "specific, actionable insights and recommendations for a business leader. "
-              "Use ONLY the numbers provided — never invent data. Lead with the most important point.")
+              "Use ONLY the numbers provided, never invent data. Lead with the most important point.")
     out = _call_llm(system, f"Data summary:\n{summary}\n\nWrite the insights:", provider, api_key)
     if out:
         return out
