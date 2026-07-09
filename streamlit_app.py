@@ -222,6 +222,10 @@ def get_forecast(df, periods=90):
 #==============================================================================
 
 def main():
+    # auto-load a sample dataset for demos / screenshots via ?demo=1
+    if st.query_params.get("demo") == "1" and "df" not in st.session_state:
+        st.session_state.df = generate_sample_data("Sports Apparel")
+
     # --- Sidebar ---
     with st.sidebar:
         st.header("⚙️ Configuration")
@@ -333,7 +337,8 @@ def main():
         model_choice = st.selectbox("Select Forecast Model", list(forecasts.keys()))
         forecast_df = forecasts[model_choice]
         fig_forecast = go.Figure()
-        fig_forecast.add_trace(go.Scatter(x=filtered_df['date'], y=filtered_df['revenue'], mode='lines', name='Actual Revenue'))
+        _actual = filtered_df.groupby('date')['revenue'].sum().sort_index().reset_index()
+        fig_forecast.add_trace(go.Scatter(x=_actual['date'], y=_actual['revenue'], mode='lines', name='Actual Revenue'))
         fig_forecast.add_trace(go.Scatter(x=forecast_df['ds'], y=forecast_df['yhat'], mode='lines', name='Forecast', line=dict(color='orange')))
         fig_forecast.add_trace(go.Scatter(x=forecast_df['ds'], y=forecast_df['yhat_upper'], fill='tonexty', mode='lines', line_color='rgba(255,165,0,0.2)', name='Upper Bound'))
         fig_forecast.add_trace(go.Scatter(x=forecast_df['ds'], y=forecast_df['yhat_lower'], fill='tonexty', mode='lines', line_color='rgba(255,165,0,0.2)', name='Lower Bound'))

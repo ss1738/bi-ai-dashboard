@@ -7,6 +7,8 @@ you can ask questions about the data in plain English.
 The LLM answers are grounded in a factual summary of the data, so they work from the real
 numbers instead of guessing.
 
+![Dashboard screenshot](docs/screenshot.png)
+
 ## Features
 
 ML and BI:
